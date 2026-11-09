@@ -5,7 +5,10 @@
    A thread of its own (on Linux the window's, which runs SDL there too) opens every controller SDL knows (and ones
    plugged in later), polls them every 4 ms and keeps
    the merged state; nn_hid.c ORs it into the input with XInput, keyboard and mouse. Without SDL nothing
-   changes. HOS_NO_SDL=1 leaves SDL out. The inputs go by position (HOS_PAD_*, SDL's own order: the bottom face button
+   changes. HOS_NO_SDL=1 leaves SDL out.
+
+   (kirby) Each controller's own inputs are kept beside the merged ones (hos_sdl_pad_state), and rumble can be sent to
+   one of them (hos_sdl_rumble_pad), for the games that read more than one Npad: see nn_hid.c's players. The inputs go by position (HOS_PAD_*, SDL's own order: the bottom face button
    first, cross on a DualSense, A on an Xbox pad); nn_hid.c's controls make them the Switch's buttons. */
 #include "hos.h"
 #include <stdio.h>
@@ -29,7 +32,14 @@ static SRWLOCK state_lock = SRWLOCK_INIT;
 static uint64_t state_buttons;
 static int32_t state_stick[4];
 static int state_count;
+/* (kirby) Each slot's own inputs beside the merged ones, for the games that read more than one Npad (nn_hid.c's
+   players). A slot is stable: a controller that goes away frees its slot and a new one takes the lowest free slot,
+   so the slot is what a player is counted by. */
+static struct { uint64_t buttons; int32_t stick[4]; int open; } state_pad[MAX_PADS];
 static volatile LONG rumble_low, rumble_high;   /* 0..65535, set by the vibration HLE */
+/* (kirby) Rumble for one slot, used instead of the two above once nn_hid.c serves more than one player: a four-player
+   game's effects are per controller, and sending every pad the same strength is wrong as soon as there are two. */
+static volatile LONG rumble_pad_low[MAX_PADS], rumble_pad_high[MAX_PADS], rumble_by_pad;
 
 static int32_t stick_value(int16_t v, int flip) {
     int32_t a = v < -32767 ? -32767 : v;
@@ -105,15 +115,22 @@ static void pads_poll(void) {
         uint64_t b = 0;
         int32_t s[4] = {0};
         int count = 0;
-        const uint16_t lo = (uint16_t)rumble_low, hi = (uint16_t)rumble_high;
+        uint64_t own[MAX_PADS] = {0};
+        int32_t own_stick[MAX_PADS][4] = {{0}};
+        int own_open[MAX_PADS] = {0};
         for (int i = 0; i < MAX_PADS; i++) {
             void *gc = pads[i].gc;
+            /* (kirby) each slot's rumble, or the one strength every pad gets when one player is served */
+            const uint16_t lo = (uint16_t)(rumble_by_pad ? rumble_pad_low[i] : rumble_low);
+            const uint16_t hi = (uint16_t)(rumble_by_pad ? rumble_pad_high[i] : rumble_high);
             if (!gc) continue;
             count++;
+            uint64_t one = 0;
             for (int k = BTN_A; k <= BTN_RIGHT; k++)   /* (SDL3's gamepad buttons are in SDL2's order) */
-                if (hos_sdl_pad_button(gc, k)) b |= 1ULL << k;
-            if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
-            if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
+                if (hos_sdl_pad_button(gc, k)) one |= 1ULL << k;
+            if (hos_sdl_pad_axis(gc, AX_LT) > 8000) one |= 1ULL << HOS_PAD_LTRIGGER;
+            if (hos_sdl_pad_axis(gc, AX_RT) > 8000) one |= 1ULL << HOS_PAD_RTRIGGER;
+            b |= one;
             int rx_option(int id, int otherwise);
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
@@ -121,6 +138,9 @@ static void pads_poll(void) {
                                   stick_value(hos_sdl_pad_axis(gc, AX_RX), inv_x), stick_value(hos_sdl_pad_axis(gc, AX_RY), inv_y ? 0 : 1)};
             for (int k = 0; k < 4; k++)
                 if ((v[k] < 0 ? -v[k] : v[k]) > (s[k] < 0 ? -s[k] : s[k])) s[k] = v[k];
+            own[i] = one;
+            memcpy(own_stick[i], v, sizeof v);
+            own_open[i] = 1;
             if (rumble_due(lo, hi, pads[i].rumble_lo, pads[i].rumble_hi, now, pads[i].rumble_ns)) {
                 hos_sdl_pad_rumble(gc, lo, hi, lo || hi ? 1000 : 0);
                 pads[i].rumble_lo = lo;
@@ -132,6 +152,11 @@ static void pads_poll(void) {
         state_buttons = b;
         memcpy(state_stick, s, sizeof s);
         state_count = count;
+        for (int i = 0; i < MAX_PADS; i++) {
+            state_pad[i].buttons = own[i];
+            memcpy(state_pad[i].stick, own_stick[i], sizeof own_stick[i]);
+            state_pad[i].open = own_open[i];
+        }
         ReleaseSRWLockExclusive(&state_lock);
 }
 
@@ -159,8 +184,10 @@ void hos_sdl_pads_pump(void) {
 
 /* The controllers' merged state (nn_hid.c): ORs their inputs in (1 << HOS_PAD_*), keeps the larger stick
    deflections; returns how many controllers SDL has open. Starts the SDL thread on the first call. */
-int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
-    static volatile LONG started;
+/* (kirby) The polling: started at the first read of any kind, whether that read wants the merge or one slot. Factored
+   out of hos_sdl_pads so that hos_sdl_pad_count and hos_sdl_pad_state start it too; 0 when there is no SDL to poll. */
+static int pads_ensure_started(void) {
+    static volatile LONG started, usable;
     if (!started && !InterlockedExchange(&started, 1)) {
         if (getenv("HOS_NO_SDL")) return 0;
         if (!hos_sdl_load()) {
@@ -175,7 +202,13 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
         else
             CreateThread(NULL, 0, pad_main, NULL, 0, NULL);   /* (no window: nothing else pumps SDL) */
 #endif
+        InterlockedExchange(&usable, 1);
     }
+    return usable != 0;
+}
+
+int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
+    if (!pads_ensure_started()) return 0;
     AcquireSRWLockShared(&state_lock);
     const int n = state_count;
     *buttons |= state_buttons;
@@ -186,6 +219,34 @@ int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
     return n;
 }
 
+/* (kirby) How many controllers SDL has open, and the polling started if it was not. nn_hid.c asks this to decide how
+   many players HOS_NPAD_PLAYERS=auto serves. */
+int hos_sdl_pad_count(void) {
+    if (!pads_ensure_started()) return 0;
+    AcquireSRWLockShared(&state_lock);
+    const int n = state_count;
+    ReleaseSRWLockShared(&state_lock);
+    return n;
+}
+
+/* (kirby) One controller's own inputs (1 << HOS_PAD_*) and sticks, not the merge: what a second, third or fourth
+   player reads. Returns whether that slot has a controller open, which is the Npad's connection state. */
+int hos_sdl_pad_state(int slot, uint64_t *buttons, int32_t stick[4]) {
+    if (slot < 0 || slot >= MAX_PADS) return 0;
+    if (!pads_ensure_started()) return 0;
+    AcquireSRWLockShared(&state_lock);
+    const int open = state_pad[slot].open;
+    if (open) {
+        *buttons |= state_pad[slot].buttons;
+        for (int k = 0; k < 4; k++)
+            if ((state_pad[slot].stick[k] < 0 ? -state_pad[slot].stick[k] : state_pad[slot].stick[k])
+                > (stick[k] < 0 ? -stick[k] : stick[k]))
+                stick[k] = state_pad[slot].stick[k];
+    }
+    ReleaseSRWLockShared(&state_lock);
+    return open;
+}
+
 /* Vibration from the game (0..1 amplitudes of the low and high bands), for the pads that rumble. */
 void hos_sdl_rumble(float low, float high) {
     if (low < 0) low = 0;
@@ -194,4 +255,18 @@ void hos_sdl_rumble(float low, float high) {
     if (high > 1) high = 1;
     InterlockedExchange(&rumble_low, (LONG)(low * 65535));
     InterlockedExchange(&rumble_high, (LONG)(high * 65535));
+}
+
+/* (kirby) Vibration for one controller, once more than one player is served: the vibration handle carries the Npad id
+   its value is for (nn_hid.c's vibration_send), and that id is the slot. The first per-slot value switches pads_poll
+   over for good, because a game that addresses its players separately never means every pad to shake together. */
+void hos_sdl_rumble_pad(int slot, float low, float high) {
+    if (slot < 0 || slot >= MAX_PADS) return;
+    if (low < 0) low = 0;
+    if (low > 1) low = 1;
+    if (high < 0) high = 0;
+    if (high > 1) high = 1;
+    InterlockedExchange(&rumble_pad_low[slot], (LONG)(low * 65535));
+    InterlockedExchange(&rumble_pad_high[slot], (LONG)(high * 65535));
+    InterlockedExchange(&rumble_by_pad, 1);
 }

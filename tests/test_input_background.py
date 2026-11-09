@@ -62,7 +62,7 @@ def main():
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
     constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls)
     constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
-    for name in ("STATE_SIZE", "NPAD_NO1", "ATTR_CONNECTED"):
+    for name in ("STATE_SIZE", "NPAD_NO1", "ATTR_CONNECTED", "NPAD_PLAYERS_MAX"):
         matches = re.findall(r"^#define " + name + r"\s+[^\n]+", hid, re.M)
         assert len(matches) == 1, name
         constants += matches[0] + "\n"
@@ -78,6 +78,10 @@ void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpecte
     actual = "\n".join((cheat_state, cheat_spies, block(hid, "static int key("), block(hid, "static int kmap_down("),
         block(hid, "static int game_in_front("), hid[start:end], block(hid, "static void stick_max("),
         block(hid, "static int pads_in_background("),
+        # (the players: with HOS_NPAD_PLAYERS unset these answer "one player, Npad No.1, always connected", which is
+        #  what every case below expects; the multi-player answers are tests/test_multi_pad.py's)
+        block(hid, "static int npad_players("), block(hid, "static int npad_player("),
+        block(hid, "static int npad_player_connected("),
         # (the bound keys' helpers read_input calls: a mouse button counts only while the mouse is captured)
         block(hid, "static int mouse_vk_slot("), re.search(r"^static int mouse_armed\[5\];", hid, re.M).group(0),
         block(hid, "static void mouse_buttons_arm("), block(hid, "static int bound_down("),
@@ -87,7 +91,8 @@ void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpecte
                                   for name in ("hos_title_input", "hos_frame_step_buttons"))
     env = os.environ.copy()
     for name in list(env):
-        if name.startswith("HOS_INPUT_") or name in ("HOS_HEADLESS", "HOS_WINDOW_NOACTIVATE"):
+        # (HOS_NPAD_PLAYERS unset is one player: every case below is the single-pad path, as Ocarina reads it)
+        if name.startswith("HOS_INPUT_") or name in ("HOS_HEADLESS", "HOS_WINDOW_NOACTIVATE", "HOS_NPAD_PLAYERS"):
             del env[name]
     flags = subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 0
     def run(command, environment=None):

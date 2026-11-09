@@ -21,6 +21,11 @@
    HOS_INPUT_SCRIPT (test runs): timed presses added to the input, "<seconds>:<button>[+<button>...][/<ms held>],..."
    with buttons A B X Y L R ZL ZR PLUS MINUS LS RS LEFT UP RIGHT DOWN and the stick directions LUP LDOWN LLEFT
    LRIGHT RUP RDOWN RLEFT RRIGHT; held 200 ms unless given. Example: "50:A,52:A,80:LUP/4000".
+   A press may also name the player it is for, P1 to P8, anywhere in its button list: "52:P2+A" presses A on Npad
+   No.2. Without one it is P1, so every script written before this means what it meant before.
+
+   (kirby) HOS_NPAD_PLAYERS=<1..8|auto>: how many players to serve (the players section below). Unset, empty, 0 or 1
+   is one player and the file behaves exactly as it did for Ocarina; "auto" is one player per attached controller.
 
    Npad states share one layout (NpadCommonState): { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes;
    pad } = 0x28 bytes. */
@@ -234,7 +239,7 @@ static int game_in_front(void) {
 /* HOS_INPUT_SCRIPT, and HOS_INPUT_LIVE=<file>: lines appended to that file while the game runs are presses in the
    script's syntax, their times counted from when the line is read ("0:LUP/2000,2:A"): a test can steer the game
    by looking at its screenshots. */
-typedef struct { int64_t start_ms, end_ms; uint64_t buttons; int32_t stick[4]; } Press;
+typedef struct { int64_t start_ms, end_ms; uint64_t buttons; int32_t stick[4]; int pad; } Press;
 #define MAX_PRESSES 1024
 static Press presses[MAX_PRESSES];
 static int npresses = -1;
@@ -332,6 +337,8 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
         int64_t hold = 200;
         for (;;) {
             size_t n = strcspn(s, "+/,\r\n");
+            /* (kirby) P1..P8: the player this press is for. No button is named P<digit>, so this cannot shadow one */
+            if (n == 2 && s[0] == 'P' && s[1] >= '1' && s[1] <= '8') p.pad = s[1] - '1';
             for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
                 if (strlen(names[i].name) == n && !strncmp(s, names[i].name, n)) {
                     if (names[i].b >= 0) p.buttons |= 1ULL << names[i].b;
@@ -358,12 +365,12 @@ static int parse_presses(const char *s, int64_t base_ms, int live) {
     return got;
 }
 
-static void scripted_input(uint64_t *buttons, int32_t stick[4]) {
+static void scripted_input(int player, uint64_t *buttons, int32_t stick[4]) {
     if (npresses < 0) parse_script();
     live_input();
     const int64_t ms = script_elapsed_ms(hos_now_ns());
     for (int i = 0; i < npresses; i++)
-        if (ms >= presses[i].start_ms && ms < presses[i].end_ms) {
+        if (presses[i].pad == player && ms >= presses[i].start_ms && ms < presses[i].end_ms) {
             *buttons |= presses[i].buttons;
             for (int k = 0; k < 4; k++)
                 if (presses[i].stick[k]) stick[k] = presses[i].stick[k];
@@ -495,11 +502,48 @@ void hos_bind(int set, int button, int slot, int code) {
 static volatile LONG pad_raw_now;   /* the gamepads' inputs at the last read, 1 << HOS_PAD_* */
 uint32_t hos_pad_raw(void) { return (uint32_t)pad_raw_now; }
 
-static void pads_read(uint64_t *buttons, int32_t stick[4]) {
+/* The gamepad inputs a player's controls are read from, mapped to the Switch's buttons: Back and Start together are
+   the Insert menu's and reach the game one at a time, and pad_bind says which input presses which button. */
+static uint64_t pads_mapped(uint64_t raw) {
+    /* Back and Start together open the Insert menu (gpu/vk/vk_menu.cpp, for pads whose Home button the system
+       keeps): they reach the game only one at a time */
+    const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
+    if ((raw & chord) == chord) raw &= ~chord;
+    binds_load();
+    uint64_t b = 0;
+    for (int i = 0; i < HOS_SW_N; i++)
+        if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1)) b |= 1ULL << i;
+    return b;
+}
+
+/* (kirby) One player's own controller, for the players past the first: that SDL slot alone, with no XInput in it.
+   XInput indexes its own four slots with no relation to SDL's, so a per-player merge of both would count a pad that
+   both APIs see twice; SDL sees every pad XInput does, so nothing is lost. */
+static int pads_read_one(int slot, uint64_t *buttons, int32_t stick[4]) {
+    int hos_sdl_pad_state(int slot, uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */
+    uint64_t raw = 0;
+    int32_t s[4] = {0};
+    const int open = hos_sdl_pad_state(slot, &raw, s);
+    /* pad_raw_now is the "a pad is still held" signal the menu reads. The first player's read sets it and the others
+       add to it, so over a frame in which the game reads each of its Npads it is the OR of every served pad. */
+    if (slot == 0) InterlockedExchange(&pad_raw_now, (LONG)raw);
+    else InterlockedOr(&pad_raw_now, (LONG)raw);
+    if (!open) return 0;
+    *buttons |= pads_mapped(raw);
+    stick_max(stick, s);
+    return 1;
+}
+
+/* slot < 0: every controller merged, which is what one player reads; slot >= 0: that controller alone */
+static void pads_read(int slot, uint64_t *buttons, int32_t stick[4]) {
     static int64_t next_read, retry[XUSER_MAX_COUNT];
     static int was_connected[XUSER_MAX_COUNT];
     static uint64_t cached_buttons;
     static int32_t cached_stick[4];
+    if (slot >= 0) {
+        pads_read_one(slot, buttons, stick);
+        return;
+    }
     const int64_t now = hos_now_ns();
     if (now < next_read) {
         *buttons |= cached_buttons;
@@ -564,14 +608,7 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
         stick_max(s, v);
     }
     InterlockedExchange(&pad_raw_now, (LONG)raw);
-    /* Back and Start together open the Insert menu (gpu/vk/vk_menu.cpp, for pads whose Home button the system
-       keeps): they reach the game only one at a time */
-    const uint64_t chord = 1ULL << HOS_PAD_BACK | 1ULL << HOS_PAD_START;
-    if ((raw & chord) == chord) raw &= ~chord;
-    binds_load();
-    uint64_t b = 0;
-    for (int i = 0; i < HOS_SW_N; i++)
-        if (pad_bind[i] >= 0 && (raw >> pad_bind[i] & 1)) b |= 1ULL << i;
+    const uint64_t b = pads_mapped(raw);
     cached_buttons = b;
     memcpy(cached_stick, s, sizeof s);
     *buttons |= b;
@@ -582,6 +619,60 @@ static void pads_read(uint64_t *buttons, int32_t stick[4]) {
    otherwise the Insert menu's "Controller in background" row */
 static int pads_in_background(const char *env, int menu) {
     return env ? atoi(env) != 0 : menu != 0;
+}
+
+/* ---- (kirby) the players: Npad No.1 .. No.8 ----------------------------------------------------------------------
+   Ocarina reads No.1 alone and everything a PC has is merged into it, which is right for one player and wrong for
+   four: a four-player game reads No.1 .. No.4 and expects each to be a controller of its own.
+
+   HOS_NPAD_PLAYERS says how many players to serve. Unset, empty, 0 or 1 serves one, and then nothing here changes
+   what the game sees: No.1 alone is connected and reads the merge of every device, as before. "auto" serves one
+   player per attached SDL controller (at least one), which is what a Kirby profile would set. A number serves that
+   many however many are plugged in, so a game can be shown four Npads whose players 2..4 are disconnected until
+   their controllers arrive.
+
+   One player is the default because the default has to be safe for the only game that can be booted here: Ocarina
+   reads No.1 alone, and under "auto" a second pad on the desk would stop driving it, with no Kirby build to show
+   that the per-player path is right instead. docs/kirby-air-riders.md says this at more length.
+
+   Player 1 always reads everything - the keyboard, the mouse, the script, XInput and, when one player is served,
+   every controller - so the keyboard alone still plays. Players 2 and up are one SDL controller each, in the order
+   pad_sdl.c opened them: there is one keyboard and one mouse on a PC and no device identity to split them by. */
+#define NPAD_PLAYERS_MAX 8
+int hos_sdl_pad_count(void);                                           /* pad_sdl.c */
+int hos_sdl_pad_state(int slot, uint64_t *buttons, int32_t stick[4]);   /* pad_sdl.c */
+
+static int npad_players(void) {
+    static int asked;   /* 0 not read yet, -1 "auto", otherwise the count (as the other switches in this file) */
+    int n = asked;
+    if (!n) {
+        const char *e = getenv("HOS_NPAD_PLAYERS");
+        n = !e || !*e ? 1 : !strcmp(e, "auto") || !strcmp(e, "AUTO") ? -1 : atoi(e);
+        if (n != -1 && n < 1) n = 1;
+        if (n > NPAD_PLAYERS_MAX) n = NPAD_PLAYERS_MAX;
+        asked = n;
+        if (n < 0) hos_log("hid: one player per attached controller (HOS_NPAD_PLAYERS=auto)");
+        else if (n > 1) hos_log("hid: %d players, on Npad No.1 to No.%d (HOS_NPAD_PLAYERS)", n, n);
+    }
+    if (n > 0) return n;
+    const int pads = hos_sdl_pad_count();
+    return pads < 1 ? 1 : pads > NPAD_PLAYERS_MAX ? NPAD_PLAYERS_MAX : pads;
+}
+
+/* Which player an Npad id is: No.1 .. No.8 are ids 0..7, and -1 for an id this run does not serve. Handheld (0x20) is
+   never served, so the game keeps being told it is a docked console with Pro Controllers. */
+static int npad_player(uint32_t id) {
+    return id < (uint32_t)npad_players() ? (int)id : -1;
+}
+
+/* Whether a player's pad is connected. Player 1 always is, because the keyboard plays without any controller; the
+   others follow their controller, so the game sees a pad appear and go away as it is plugged in and unplugged. */
+static int npad_player_connected(int player) {
+    if (player < 0) return 0;
+    if (player == 0) return 1;
+    uint64_t buttons = 0;
+    int32_t stick[4] = {0};
+    return hos_sdl_pad_state(player, &buttons, stick);
 }
 
 #ifndef VK_XBUTTON1
@@ -654,10 +745,14 @@ static int flight_jump_shortcut(uint64_t *buttons, int mode, int menu_open, int 
     return mode > 0;
 }
 
-static void read_input(uint64_t *buttons, int32_t stick[4]) {
+/* (kirby) player is which Npad this is for, 0 for No.1. Which controllers it reads: with one player served, every one
+   of them merged, as Ocarina has always read them (slot -1); with more, that player's own controller alone, and the
+   keyboard and mouse stay with player 1. */
+static void read_input(int player, uint64_t *buttons, int32_t stick[4]) {
+    const int slot = npad_players() > 1 ? player : -1;
     *buttons = 0;
     memset(stick, 0, 4 * sizeof *stick);
-    scripted_input(buttons, stick);
+    scripted_input(player, buttons, stick);
     /* A scripted run (a test) takes no input from the player's devices until 5 s after its last press (a variable
        left set in a shell no longer leaves the game without controls), and otherwise the pads count only
        while the game's window is in front, like the keyboard: XInput is global, so a test run in the background
@@ -680,14 +775,14 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
         static const char *env;
         static int looked;
         if (!looked) looked = 1, env = getenv("HOS_INPUT_BACKGROUND");
-        if (pads_in_background(env, rx_option(4, 0))) pads_read(buttons, stick);
+        if (pads_in_background(env, rx_option(4, 0))) pads_read(slot, buttons, stick);
         return;
     }
     {   /* (hookshot) while the Insert menu is open the pads are its own, as the keyboard is (key()), and after it
            closed until they are let go (the press that closed it never reaches the game) */
         uint64_t pb = 0;
         int32_t ps[4] = {0};
-        pads_read(&pb, ps);
+        pads_read(slot, &pb, ps);
         static int after_menu;
         if (rx_option(1, 0)) after_menu = 1;
         else if (after_menu && !pad_raw_now) after_menu = 0;
@@ -696,6 +791,8 @@ static void read_input(uint64_t *buttons, int32_t stick[4]) {
             stick_max(stick, ps);
         }
     }
+    /* (kirby) the keyboard and the mouse are player 1's: a PC has one of each, and nothing says which player is at it */
+    if (player > 0) return;
     binds_load();   /* (the keys: key_default's, or hookshot_options.ini's; the mouse's buttons once its capture is known) */
     for (int i = 0; i < HOS_SW_N; i++)
         if (bound_down(i, 0)) *buttons |= 1ULL << i;
@@ -741,26 +838,32 @@ static void npad_states(Ctx *c) {
     uint32_t id = G32(ARG(2));
     uint64_t buttons = 0;
     int32_t stick[4] = {0};
-    int connected = id == NPAD_NO1;
+    /* (kirby) the player this id is, and whether that player's pad is there: No.1 alone with one player served */
+    const int player = npad_player(id);
+    const int connected = npad_player_connected(player);
     {
         static int64_t last_read;
         static uint32_t seen_ids[16];
         static int nseen;
         const int64_t now = hos_now_ns();
-        if (connected && last_read && now - last_read > 2000000000LL)
+        if (player == 0 && last_read && now - last_read > 2000000000LL)
             hos_log("hid: the game read no controller for %.1f s (lr %#llx)", (now - last_read) / 1e9,
                     (unsigned long long)c->x[30]);
-        if (connected) last_read = hos_hid_last_read = now;
+        if (player == 0) last_read = hos_hid_last_read = now;
         int known = 0;
         for (int i = 0; i < nseen; i++) known |= seen_ids[i] == id;
         if (!known && nseen < 16) {
             seen_ids[nseen++] = id;
-            hos_log("hid: the game reads npad %#x (%s, lr %#llx)", id, connected ? "No.1" : "not connected",
+            hos_log("hid: the game reads npad %#x (%s, lr %#llx)", id,
+                    player < 0 ? "not served" : connected ? "connected" : "served, no controller",
                     (unsigned long long)c->x[30]);
         }
     }
-    if (connected) {
-        read_input(&buttons, stick);
+    if (connected) read_input(player, &buttons, stick);
+    /* (kirby) Ocarina's debug tools, and its own menus below them, are the first player's: the flight and free-camera
+       state is one set of globals the game reads, and there is one title screen. None of it runs for another Npad, so
+       a second player's pad cannot move the debug camera or press through Ocarina's menus. */
+    if (connected && player == 0) {
         uint64_t axes = 0;
         uint64_t flight = 0;
         int height = 0;
@@ -785,9 +888,9 @@ static void npad_states(Ctx *c) {
         __atomic_store_n(&free_camera_height, height, __ATOMIC_RELAXED);
     }
     uint64_t hos_title_input(uint64_t buttons);   /* totk_title.c: the title menu's credits entries */
-    if (connected) buttons = hos_title_input(buttons);
+    if (player == 0) buttons = hos_title_input(buttons);
     uint64_t hos_frame_step_buttons(uint64_t buttons);   /* nn_vi.c: the frame step of the wheel and quick menus */
-    if (connected) buttons = hos_frame_step_buttons(buttons);
+    if (player == 0) buttons = hos_frame_step_buttons(buttons);
     int64_t s = ++sampling;
     for (int i = 0; i < count; i++) {
         uint64_t e = out + (uint64_t)i * STATE_SIZE;
@@ -804,22 +907,53 @@ HLE(_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj) { npad_states(c); }
 HLE(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyDualStateEiRKj) { npad_states(c); }
 HLE(_ZN2nn3hid13GetNpadStatesEPNS0_16NpadJoyLeftStateEiRKj) { npad_states(c); }
 HLE(_ZN2nn3hid13GetNpadStatesEPNS0_17NpadJoyRightStateEiRKj) { npad_states(c); }
-/* GetNpadStyleSet(unsigned int const&) -> BitFlagSet<32, NpadStyleTag> */
-HLE(_ZN2nn3hid15GetNpadStyleSetERKj) { RET(G32(ARG(0)) == NPAD_NO1 ? STYLE_FULLKEY : 0); }
+/* GetNpadStyleSet(unsigned int const&) -> BitFlagSet<32, NpadStyleTag>: FullKey (a Pro Controller) for every player
+   whose pad is connected, and an empty set for the rest, which is what the game sees for an Npad with nothing on it.
+   Every pad is reported as FullKey whatever it really is, because the controls map by position (pad_bind). */
+HLE(_ZN2nn3hid15GetNpadStyleSetERKj) {
+    RET(npad_player_connected(npad_player(G32(ARG(0)))) ? STYLE_FULLKEY : 0);
+}
 
 HLE(_ZN2nn3hid14InitializeNpadEv) {}
 HLE(_ZN2nn3hid18InitializeKeyboardEv) {}
 HLE(_ZN2nn3hid15InitializeMouseEv) {}
 HLE(_ZN2nn3hid14DisconnectNpadERKj) {}
 HLE(_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE) {}
-HLE(_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm) {}
-HLE(_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {}
+/* SetSupportedNpadIdType(unsigned int const* ids, size_t count): accepted, as before, and logged once. Which ids a
+   game asks to support is how many players it means to have, and for a game nobody here can boot this log line is
+   the evidence: it says whether the game wants No.1..No.4 and whether it asks for Handheld (0x20). */
+HLE(_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm) {
+    static volatile LONG told;
+    const uint64_t ids = ARG(0);
+    const int n = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    if (ids && !InterlockedExchange(&told, 1)) {
+        char line[160];
+        int at = 0;
+        for (int i = 0; i < n && at < (int)sizeof line - 16; i++)
+            at += snprintf(line + at, sizeof line - (size_t)at, " %#x", G32(ids + 4 * (uint64_t)i));
+        hos_log("hid: the game supports %d npad id%s:%.*s (serving %d player%s)", n, n == 1 ? "" : "s", at, line,
+                npad_players(), npad_players() == 1 ? "" : "s");
+    }
+}
+/* SetSupportedNpadStyleSet(BitFlagSet<32, NpadStyleTag>): accepted, and logged once. FullKey is bit 0 (STYLE_FULLKEY
+   above); a game that also asks for JoyLeft or JoyRight means to let one controller be two players, which this
+   runtime does not do. */
+HLE(_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE) {
+    static volatile LONG told;
+    if (!InterlockedExchange(&told, 1))
+        hos_log("hid: the game supports npad styles %#llx", (unsigned long long)ARG(0));
+}
 HLE(_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE) {}
 
-/* ShowControllerSupport(ControllerSupportResultInfo*, ControllerSupportArg const&) -> Result: one player, No.1 */
+/* ShowControllerSupport(ControllerSupportResultInfo*, ControllerSupportArg const&) -> Result: the players that are
+   served, with No.1 as the selected one. There is no applet behind this: the real one shows a "press L+R" screen that
+   assigns the players, and this answers at once with the pads that are already here. A game that insists on the
+   applet's own assignment will need more than a count, and nothing can say whether Kirby does until it is run. */
 HLE(_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE) {
+    int n = 0;
+    for (int p = 0; p < npad_players(); p++) n += npad_player_connected(p) ? 1 : 0;
     memset(GP(ARG(0)), 0, 8);
-    *(uint8_t *)GP(ARG(0)) = 1;
+    *(uint8_t *)GP(ARG(0)) = (uint8_t)(n < 1 ? 1 : n);
     G32(ARG(0) + 4) = NPAD_NO1;
     RET(0);
 }
@@ -872,12 +1006,17 @@ static float rumble_motor(float amp, float freq, float start, float width) {
     return boosted * scale > 1.0f ? 1.0f : boosted * scale;
 }
 static void vibration_send(uint64_t handle, uint64_t value) {
-    static float amp[2][2];
+    static float amp[NPAD_PLAYERS_MAX][2][2];
     float v[4];
     memcpy(v, GP(value), sizeof v);
     const int dev = (G32(handle) >> 16) & 1;
-    amp[dev][0] = rumble_motor(v[0], v[1], 140.0f, 400.0f);
-    amp[dev][1] = rumble_motor(v[2], v[3], 200.0f, 700.0f);
+    /* (kirby) the handle's second byte is the Npad id this value is for (GetVibrationDeviceHandles below), so with
+       more than one player served each pad gets its own; with one, every pad gets it, as before */
+    const int players = npad_players();
+    int pad = (int)((G32(handle) >> 8) & 0xFF);
+    if (players <= 1 || pad < 0 || pad >= players) pad = 0;
+    amp[pad][dev][0] = rumble_motor(v[0], v[1], 140.0f, 400.0f);
+    amp[pad][dev][1] = rumble_motor(v[2], v[3], 200.0f, 700.0f);
     {   /* (hookshot, issue 263) what the game asks for: the first values, then a count now and then */
         static long long n, strong;
         static float peak;
@@ -887,8 +1026,13 @@ static void vibration_send(uint64_t handle, uint64_t value) {
             hos_log("hid: vibration #%lld: handle %08x, low %.2f @ %.0f Hz, high %.2f @ %.0f Hz", n, G32(handle), v[0], v[1], v[2], v[3]);
         if ((++n & 4095) == 0) hos_log("hid: %lld vibration values, strongest %.2f since the last count", n, peak), peak = 0;
     }
-    void hos_sdl_rumble(float low, float high);   /* pad_sdl.c */
-    hos_sdl_rumble(amp[0][0] > amp[1][0] ? amp[0][0] : amp[1][0], amp[0][1] > amp[1][1] ? amp[0][1] : amp[1][1]);
+    /* the stronger of the two sides of this pad, for the one motor a PC controller has per band */
+    const float low = amp[pad][0][0] > amp[pad][1][0] ? amp[pad][0][0] : amp[pad][1][0];
+    const float high = amp[pad][0][1] > amp[pad][1][1] ? amp[pad][0][1] : amp[pad][1][1];
+    void hos_sdl_rumble(float low, float high);                  /* pad_sdl.c */
+    void hos_sdl_rumble_pad(int slot, float low, float high);    /* pad_sdl.c */
+    if (players > 1) hos_sdl_rumble_pad(pad, low, high);
+    else hos_sdl_rumble(low, high);
 }
 static void vibration_value_idle(uint64_t v) {   /* VibrationValue {f32 amp_low, freq_low, amp_high, freq_high} */
     float idle[4] = {0.0f, 160.0f, 0.0f, 320.0f};

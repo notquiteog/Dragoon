@@ -54,9 +54,18 @@ short GetAsyncKeyState(int key) { key_queries++; return key == 'P' || key == 'D'
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) {
     bootstrap_polls++; *buttons = 1ULL << B_Y; stick[0] = -31000; return 1;
 }
-void pads_read(uint64_t *buttons, int32_t stick[4]) {
+/* slot < 0 is the merge of every controller, which is the single-player path these cases exercise: a slot would mean
+   production had served a second player, which HOS_NPAD_PLAYERS unset must never do. */
+void pads_read(int slot, uint64_t *buttons, int32_t stick[4]) {
     /* The physical backend boundary is a spy; actual routing merges its result with the script below. */
+    CHECK(slot < 0);
     pad_merges++; *buttons |= 1ULL << B_B; stick[0] = -12000; stick[2] = 8000;
+}
+/* The players' SDL boundary. One controller is open, which with HOS_NPAD_PLAYERS unset must still leave exactly one
+   player served and no per-slot read: a per-slot read here fails the case. */
+int hos_sdl_pad_count(void) { return 1; }
+int hos_sdl_pad_state(int slot, uint64_t *buttons, int32_t stick[4]) {
+    (void)buttons; (void)stick; CHECK(slot < 0); return 0;
 }
 void binds_load(void) {
     key_bind[B_X][0] = 'P';
