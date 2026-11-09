@@ -925,14 +925,15 @@ HLE(_ZN2nn3hid18SetNpadJoyHoldTypeENS0_15NpadJoyHoldTypeE) {}
 HLE(_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm) {
     static volatile LONG told;
     const uint64_t ids = ARG(0);
-    const int n = (int)ARG(1) < 0 ? 0 : (int)ARG(1) > 16 ? 16 : (int)ARG(1);
+    const int count = (int)ARG(1) < 0 ? 0 : (int)ARG(1);
+    const int shown = count > 16 ? 16 : count;   /* (the first 16 fit the line; the count says how many there are) */
     if (ids && !InterlockedExchange(&told, 1)) {
         char line[160];
         int at = 0;
-        for (int i = 0; i < n && at < (int)sizeof line - 16; i++)
+        for (int i = 0; i < shown && at < (int)sizeof line - 16; i++)
             at += snprintf(line + at, sizeof line - (size_t)at, " %#x", G32(ids + 4 * (uint64_t)i));
-        hos_log("hid: the game supports %d npad id%s:%.*s (serving %d player%s)", n, n == 1 ? "" : "s", at, line,
-                npad_players(), npad_players() == 1 ? "" : "s");
+        hos_log("hid: the game supports %d npad id%s:%.*s%s (serving %d player%s)", count, count == 1 ? "" : "s", at,
+                line, shown < count ? " ..." : "", npad_players(), npad_players() == 1 ? "" : "s");
     }
 }
 /* SetSupportedNpadStyleSet(BitFlagSet<32, NpadStyleTag>): accepted, and logged once. FullKey is bit 0 (STYLE_FULLKEY
