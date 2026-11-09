@@ -105,11 +105,14 @@ index. This branch keeps each slot's own buttons and sticks beside the merged st
 - `hos_sdl_rumble_pad(slot, low, high)` — rumble for one controller; `hos_sdl_rumble` keeps its meaning (all of
   them) so the one-player path is untouched.
 
-`host/nn_hid.c` grew a player layer: `npad_players()`, `npad_player()`, `npad_player_connected()` and
-`pads_read_one()`. `npad_states` now maps the id it is given to a player, answers that player's connection state,
-and reads that player's devices; `GetNpadStyleSet` answers `STYLE_FULLKEY` for every connected player;
-`ShowControllerSupport` answers with the number of players served; `vibration_send` routes by the npad id in the
-handle when more than one player is served.
+`host/nn_hid.c` grew a player layer: `npad_players()`, `npad_player()`, `npad_player_connected()`, `pads_mapped()`
+and `pads_read_one()`. `read_input` and `pads_read` each took one more argument — the player, and the SDL slot to
+read, where `-1` is "all of them merged", which is what one player gets. `npad_states` maps the id it is given to a
+player, answers that player's connection state and reads that player's devices; `GetNpadStyleSet` answers
+`STYLE_FULLKEY` for every connected player and an empty set for the rest; `ShowControllerSupport` answers with the
+number of players whose pad is there; `vibration_send` routes by the npad id in the handle once more than one
+player is served. `SetSupportedNpadIdType` and `SetSupportedNpadStyleSet`, which were empty, now log what the game
+asked for — for a game nobody can boot, that one log line is the evidence of how many players it means to have.
 
 **`HOS_NPAD_PLAYERS=<1..8|auto>` decides, and unset means one player.** Unset, empty, `0` or `1` give byte-for-byte
 the old behaviour: only No.1 is connected, and it reads the merge of every device. `auto` serves one player per
@@ -143,13 +146,19 @@ a convenience: with no Kirby dump, a script is the *only* way the multi-player p
 
 ### How single-pad behaviour is known to be unchanged
 
-- With `HOS_NPAD_PLAYERS` unset, `npad_players()` returns 1, and `npad_states` calls the original `read_input`
-  through the original merged `pads_read(-1, ...)` path. The per-player code is not reached.
-- `tests/test_input_background.py` compiles the real `read_input`, `npad_states`, the script parser and the live
-  reader out of `host/nn_hid.c` and runs all 17 of its cases against them. Those cases pin the exact bytes of the
-  npad state, the sampling numbers, the foreground and background rules, the exclusive interval and the frame
-  clock. They pass unchanged, and `read_input_player` is given a fixture body that fails the test if it is ever
-  called — so the old cases are provably still going through the old path, not through a stand-in.
+- With `HOS_NPAD_PLAYERS` unset, `npad_players()` returns 1, so `read_input` takes `slot = -1` and reads through the
+  original merged `pads_read(-1, ...)` path. Not one line of the per-player code runs: `pads_read_one` is not
+  called, `hos_sdl_pad_state` is not called, and `npad_player()` maps only id 0.
+- `tests/test_input_background.py` compiles the real `read_input`, `npad_states`, the player layer, the script
+  parser and the live reader out of `host/nn_hid.c` and runs all 17 of its cases against them. Those cases pin the
+  exact bytes of the npad state, the sampling numbers, the foreground and background rules, the exclusive interval
+  and the frame clock, and they pass unchanged. Its two controller spies now assert the single-pad contract
+  directly: `pads_read` fails the case unless production asked for the merge (`slot < 0`), and `hos_sdl_pad_state`
+  fails it if production reads a per-player slot at all. So the old cases are provably still on the old path.
+- The three ways this could have gone wrong were each tried, as mutations of the production source, to show the new
+  check is not a guard that passes by checking nothing: making `read_input` always take the merged path, making
+  `npad_player` map every id to player 1, and letting the keyboard reach every player. All three fail
+  `tests/test_multi_pad.py`, at the case and line that should catch them.
 - `tests/test_bound_keys.py`, `tests/test_alt_enter.py`, `tests/test_mouse_settings.py` and
   `tests/test_rumble_refresh.py` compile other slices of the same two files and are unchanged.
 - `tests/test_multi_pad.py` (new) is the opposite check: with `HOS_NPAD_PLAYERS` set it asserts that No.2 is
@@ -211,6 +220,19 @@ it instead of to `a64_unimplemented`.
   (`host/nvn_native.c:2925`), which exists for the same reason: sometimes you want the failure to be a wall.
 - `HOS_LDN_SOFT=1`: the old `x0 = 0`. It exists only so that someone surveying a first Kirby boot can see how far
   the game gets, and the log says in so many words that every answer from then on is a fake.
+
+The routing is name-driven from the symbols the dump actually has (`refusal_for`, which applies the same
+free-function test `os_facing` does), not from a list of functions written out by hand, so it cannot silently miss
+an `nn::ldn` import whatever that import turns out to be called. `tests/test_ldn_refused.py` runs the real
+`gen_stubs` over an authored hook list and checks that every `nn::ldn` free function goes to the refusal while a
+class member, another service and a namespace that merely starts with `ldn` keep the generic stub; then it compiles
+the real `hos_ldn_refuse` and checks the three answers, including that a caller polling 3,000 times is logged more
+than once and fewer than a dozen times. Dropping the routing, or making the refusal return `0`, each fail it.
+
+The Result it returns is `203`, the `ldn` module with description 0. Module 203 is `ldn`'s by the public error-code
+list (an `ldn` failure is reported as `2203-xxxx`). The description is deliberately left 0 rather than filled in
+with something plausible: the descriptions the console returns for "no wireless" are **not known here** and are not
+invented, and the only property the value needs is that it is not success.
 
 Why a failure rather than a stub that fabricates an empty network: because a fabricated "no networks found, but
 wireless is working" is exactly the "silently pretends a network exists" case, and it costs more than it buys. To
@@ -309,6 +331,31 @@ What the seam itself needs, stated as requirements:
    set `auto`, Ocarina's would leave it at one, and neither would need an environment variable.
 
 
+## 5a. The rename, and what was deliberately not renamed
+
+The product is **Dragoon** now: the window and its class, the console title and the graphics-card warning
+(`host/hos.h`'s `HOS_GAME_TITLE`, `host/display.c`, `host/posix/display_sdl.c`, `gpu/vk/vk_main.cpp`), the builder on
+both platforms, its desktop entry and shortcut, the AppImage (`Dragoon-<version>-x86_64.AppImage`), the CI artifact
+names, `readme.md`, `CONTRIBUTING.md` and `docs/versioning.md`.
+
+What was left alone, on purpose:
+
+- **File names, switches and identifiers**: `hookshot.exe` / `hookshot_vk.so`, `hookshot_options.ini`,
+  `hookshot_env.txt`, `hookshot_log.txt`, the `HOOKSHOT_*` and `HOS_*` environment variables, `HookshotBuilder` as a
+  namespace and assembly, `io.github.NotRexed.Hookshot` as the Wayland app id. These are a file format and a
+  command-line interface, not a product name.
+- **`(hookshot)` comment markers and `namespace mkwvk`.** They mark which lineage a change came from, and keeping
+  the paths and markers identical to mkw-recomp's is what lets its fixes still apply here (`docs/design.md`
+  section 2). Renaming them would make every future `git apply -3` of an mkw-recomp patch conflict.
+- **URLs and references to upstream issues.** `github.com/NotRexed/Hookshot` and "Hookshot issue 14" are references
+  to a real project; rewriting them would turn them into links and citations that go nowhere. This fork has no
+  repository of its own, so it has no URL to put there.
+- **`docs/design.md` and `docs/development.md`.** They describe the Ocarina port in detail, down to its dump's build
+  ids and its open bugs. They now carry a banner saying so and keep their own name, because renaming the title of a
+  document whose every statement is about Hookshot and Ocarina would make it lie. The old product readme was moved
+  whole to `docs/hookshot-readme.md`, with a banner of its own: its engine, build and troubleshooting instructions
+  still apply, and everything it says about status and releases is Hookshot's.
+
 ## 6. Everything else between this and booting Kirby Air Riders
 
 Honest list, in the order it would be hit.
@@ -341,3 +388,19 @@ Honest list, in the order it would be hit.
 What this branch is, then: the input path a four-player game needs, an `ldn` answer that does not lie, and a
 written-down list of what the game-specific layer would have to supply. It cannot and does not claim anything about
 Kirby Air Riders itself.
+
+
+## 7. Outstanding on this branch
+
+- **A rebase.** This branch was cut from Hookshot `0196314` and finished against it. Upstream `main` has moved on
+  since (the FSR/DLSS work merged, tagged `v2.1.0`), and rebasing onto it has not been done. The renderer is where
+  that work landed and where this branch touched only `gpu/vk/vk_main.cpp`'s three title strings, so the conflicts
+  should be small, but they are real and unexamined.
+- **Nothing is pushed anywhere.** There is no repository for this fork; the work is a local branch,
+  `fork/kirby-air-riders`, in a clone of its own. Where it lands is not this branch's decision.
+- **The host runtime is not compiled by the check that runs here.** `RX_VK_ONLY=1` builds the renderer alone, so
+  `host/nn_hid.c`, `host/pad_sdl.c` and `host/nn_ldn.c` are not in it. They were checked another way: `gcc
+  -fsyntax-only -Wall -Wextra` over each whole file, and the tests above compile the parts that matter with
+  `-Werror`. A full `nx2/build.py --standalone` on a machine with the dump is what would prove the link.
+- **`HOS_NPAD_PLAYERS` defaults to one player**, so the four-player path ships off. Section 3 says why, and
+  section 5 says that turning it on belongs in the Kirby profile rather than in an environment variable.

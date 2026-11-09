@@ -177,7 +177,7 @@ int hos_display_init(void) {
         hos_log("display: no SDL: no window");
         return 0;
     }
-    hos_sdl_identity("Hookshot", HOS_APP_ID);
+    hos_sdl_identity("Dragoon", HOS_APP_ID);
     hos_sdl_hint("SDL_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR", "0");
     hos_sdl_hint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
     /* (bundled SDL tries x11 before wayland. NVIDIA's X11 surface has no mailbox, and an immediate

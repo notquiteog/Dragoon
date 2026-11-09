@@ -1,9 +1,9 @@
 #!/bin/bash
-# The Linux AppImage: Hookshot Builder with everything it needs to build the game on the player's PC. No game data and
+# The Linux AppImage: Dragoon Builder with everything it needs to build the game on the player's PC. No game data and
 # nothing made from it is in it: the game is built from the player's own copy, as on Windows.
 #
 #   scripts/linux/deps.sh        (first: the compiler, Python, FFmpeg, SDL2, headers into build-linux/deps)
-#   scripts/linux/appimage.sh    -> build-linux/Hookshot-<version>-x86_64.AppImage
+#   scripts/linux/appimage.sh    -> build-linux/Dragoon-<version>-x86_64.AppImage
 # The same image builds the game and, with --play, starts the one it saved.
 #
 # Built on the oldest system it is for (CI: Ubuntu 22.04): the sysroot it carries is that system's C library, so the
@@ -42,6 +42,7 @@ L=$APPDIR/usr/lib/hookshot
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
 cp -a nx2 host LICENSE readme.md assets "$T/"
+cp -a docs "$T/"   # (the inherited readme and the design notes the builder's help points at)
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
@@ -70,7 +71,7 @@ cp -a "$DEPS/emsdk/upstream" "$L/emsdk/"
 cp -a "$DEPS/ffmpeg" "$L/ffmpeg"
 cp "$VK" "$L/hookshot_vk.so"
 cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
-cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
+cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Dragoon)
 
 # the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
 S=$L/sysroot
@@ -113,7 +114,7 @@ cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.pn
 # (the update list, beside AppRun and not inside a hashed part: hookshot-linux.txt names each part's checksum)
 python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts"
 
-OUT=$B/Hookshot-$VERSION-x86_64.AppImage
+OUT=$B/Dragoon-$VERSION-x86_64.AppImage
 rm -f "$OUT"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$DEPS/appimagetool" --runtime-file "$DEPS/runtime-x86_64" --comp zstd "$APPDIR" "$OUT"
 echo "$OUT: $(du -h "$OUT" | cut -f1)"

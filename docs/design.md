@@ -1,5 +1,9 @@
 # Hookshot (oot-recomp): design
 
+*(Inherited from Hookshot, the Ocarina of Time port this fork came from, and still written about that game. Dragoon's
+own plan is [kirby-air-riders.md](kirby-air-riders.md); nothing below has been re-checked against Kirby Air Riders,
+which cannot be built here.)*
+
 A native x86-64 Windows build of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
 code translated to C ahead of time from the user's own decrypted dump and compiled with clang, the Horizon OS and
 NVN2 implemented natively, and the GPU work replayed on Vulkan. No CPU or GPU emulation at any point: the same

@@ -55,7 +55,7 @@ static void fail(const wchar_t *fmt, ...) {
     va_start(ap, fmt);
     vswprintf(msg, 1024, fmt, ap);
     va_end(ap);
-    MessageBoxW(g_win, msg, L"Hookshot Builder setup", MB_OK | MB_ICONERROR);
+    MessageBoxW(g_win, msg, L"Dragoon Builder setup", MB_OK | MB_ICONERROR);
     PostMessageW(g_win, WM_DONE, 1, 0);
     ExitThread(1);
 }
@@ -458,7 +458,7 @@ static DWORD WINAPI work(LPVOID unused) {
     swprintf(downloads, MAX_PATH, L"%ls\\downloads", base);
     mkdirs(downloads);
 
-    status(L"Looking for the latest Hookshot Builder...");
+    status(L"Looking for the latest Dragoon Builder...");
     Mem man = {0};
     /* (tried again on a server error or no answer: GitHub's release downloads answered 504 for an hour, 2026-11-08, and every
        start failed at once) */
@@ -471,7 +471,7 @@ static DWORD WINAPI work(LPVOID unused) {
         if (attempt) {
             status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
             Sleep(waits[attempt - 1] * 1000);
-            status(L"Looking for the latest Hookshot Builder...");
+            status(L"Looking for the latest Dragoon Builder...");
         }
         free(man.p);
         man = (Mem){0};
@@ -489,11 +489,11 @@ static DWORD WINAPI work(LPVOID unused) {
     }
     if (!ok)
         fail(g_http_status == 404
-                 ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
+                 ? L"The latest Dragoon release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
                    L"https://github.com/NotRexed/Hookshot/releases/latest"
              : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
                                L"This is on GitHub's side: try again in a few minutes, or later today."
-                             : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
+                             : L"Could not reach GitHub to get the Dragoon Builder. Check your internet connection and try again.");
 
     char tag[128] = "", run[260] = "";
     Part parts[MAX_PARTS];
@@ -623,7 +623,7 @@ static DWORD WINAPI work(LPVOID unused) {
     prune(versions, downloads, tag, parts, nparts);
     rmtree(downloads);   /* (installed: its zips are not kept; an update moves unchanged folders over instead, reuse_part) */
 
-    status(L"Starting the Hookshot Builder...");
+    status(L"Starting the Dragoon Builder...");
     wchar_t cmd[4096], dir[MAX_PATH];
     wcscpy(dir, exe);
     wchar_t *slash = wcsrchr(dir, L'\\');
@@ -698,7 +698,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
                 CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
                 return 0;
             }
-            MessageBoxW(NULL, L"The game (bin\\hookshot.exe) is missing from this folder. Build it again with the Hookshot Builder.", L"Hookshot",
+            MessageBoxW(NULL, L"The game (bin\\hookshot.exe) is missing from this folder. Build it again with the Dragoon Builder.", L"Dragoon",
                         MB_ICONERROR);
             return 1;
         }
@@ -713,7 +713,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     RegisterClassW(&wc);
     const int ww = 460, wh = 140;
-    g_win = CreateWindowW(L"HookshotSetup", L"Hookshot Builder setup", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+    g_win = CreateWindowW(L"HookshotSetup", L"Dragoon Builder setup", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
                           (GetSystemMetrics(SM_CXSCREEN) - ww) / 2, (GetSystemMetrics(SM_CYSCREEN) - wh) / 2, ww, wh, NULL, NULL, inst, NULL);
     g_text = CreateWindowW(L"STATIC", L"Starting...", WS_CHILD | WS_VISIBLE, 16, 16, ww - 48, 22, g_win, NULL, inst, NULL);
     g_bar = CreateWindowW(PROGRESS_CLASSW, NULL, WS_CHILD | WS_VISIBLE | PBS_MARQUEE, 16, 48, ww - 48, 20, g_win, NULL, inst, NULL);

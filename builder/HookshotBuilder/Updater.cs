@@ -95,7 +95,7 @@ static class Updater
         var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
         Directory.CreateDirectory(cache);
         var setup = Path.Combine(cache, SetupAsset);
-        w.Note("Downloading the new Hookshot Builder");
+        w.Note("Downloading the new Dragoon Builder");
         await DownloadWithRetries(w, http, setupUrl, setupApiUrl, setup, setupSize, token);
         var si = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
         foreach (var arg in args) si.ArgumentList.Add(arg);
@@ -111,7 +111,7 @@ static class Updater
         var tools = Tools.Find();
         if (tools == null)
         {
-            w.DownloadFailed("The Hookshot tools were not found next to this app.");
+            w.DownloadFailed("The Dragoon tools were not found next to this app.");
             return;
         }
         // (just downloaded, but another release than asked for: the setup installed the release before it (GitHub's latest link lags

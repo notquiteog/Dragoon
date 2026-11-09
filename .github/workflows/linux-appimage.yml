@@ -1,4 +1,4 @@
-# The Linux AppImage (x86_64): Hookshot Builder with the compiler, Python, libraries and the Vulkan back end it builds the
+# The Linux AppImage (x86_64): Dragoon Builder with the compiler, Python, libraries and the Vulkan back end it builds the
 # game with on the player's PC (scripts/linux/deps.sh, scripts/linux/appimage.sh). No game data is involved.
 # Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35). A workflow artifact on every run; on a tag, also an
 # asset of that tag's release (scripts/release_upload.sh, shared with the Windows builder workflow).
@@ -81,7 +81,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Hookshot-linux-x86_64
+          name: Dragoon-linux-x86_64
           path: build-linux/*.AppImage
           if-no-files-found: error
 
@@ -89,7 +89,7 @@ jobs:
       - if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: Hookshot-linux-parts
+          name: Dragoon-linux-parts
           path: build-linux/parts/
           if-no-files-found: error
 
@@ -111,11 +111,11 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: Hookshot-linux-x86_64
+          name: Dragoon-linux-x86_64
           path: dist
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: Hookshot-linux-parts
+          name: Dragoon-linux-parts
           path: dist/parts
       # (the parts to the linux-parts release, which is never "latest"; a part already there is not uploaded again)
       - name: Update parts

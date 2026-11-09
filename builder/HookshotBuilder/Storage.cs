@@ -41,7 +41,7 @@ static class Storage
     public static void MoveWork(string? picked)
     {
         var old = Work;
-        var to = picked == null ? Base : Path.Combine(picked, "Hookshot build files");
+        var to = picked == null ? Base : Path.Combine(picked, "Dragoon build files");
         if (Same(old, to)) return;
         Directory.CreateDirectory(to);
         Directory.CreateDirectory(Base);

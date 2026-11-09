@@ -1,5 +1,5 @@
 name: Build problem
-description: Hookshot Builder or make_game.py stops or gives an error
+description: Dragoon Builder or make_game.py stops or gives an error
 labels: [bug]
 body:
   - type: markdown
@@ -19,7 +19,7 @@ body:
     attributes:
       label: How you built
       options:
-        - Hookshot Builder app (Windows)
+        - Dragoon Builder app (Windows)
         - Command line (nx2/make_game.py)
         - Linux AppImage
     validations:

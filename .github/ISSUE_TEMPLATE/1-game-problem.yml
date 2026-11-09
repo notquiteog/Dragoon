@@ -13,7 +13,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Hookshot version
+      label: Dragoon version
       description: The version you built (such as `v2.0.0`, shown by the launcher and on the Releases page), or the first line of `hookshot_log.txt` if it starts with `hookshot`.
       placeholder: v2.0.0
     validations:
@@ -78,7 +78,7 @@ body:
     id: injectors
     attributes:
       label: Other software hooked into the game
-      description: ReShade, shader-cache tools (SCSKiller and the like), overlays or frame-generation injectors change what Hookshot does. Please test without them before reporting.
+      description: ReShade, shader-cache tools (SCSKiller and the like), overlays or frame-generation injectors change what Dragoon does. Please test without them before reporting.
       options:
         - No, nothing hooked in
         - Yes (named under "Changes from the defaults")

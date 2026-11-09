@@ -1,8 +1,14 @@
-# Contributing to Hookshot
+# Contributing to Dragoon
 
-Hookshot is a static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
-code is lifted to C, the Horizon OS and NVN2 are implemented natively, and the GPU work is replayed on Vulkan. No
-emulator is involved, and the game is built on your PC from your own copy.
+Dragoon is a fork of Hookshot retargeted at *Kirby Air Riders*. Hookshot is a static recompilation of the Switch 2
+*The Legend of Zelda: Ocarina of Time* remake: the game's AArch64 code is lifted to C, the Horizon OS and NVN2 are
+implemented natively, and the GPU work is replayed on Vulkan. No emulator is involved, and the game is built on your
+PC from your own copy.
+
+**Ocarina is still the only game that can be built and run here.** There is no Kirby Air Riders dump, so no Kirby
+code has been lifted, and nothing in this fork may claim otherwise: a change is evidenced by Ocarina still building
+and its checks still passing. [docs/kirby-air-riders.md](docs/kirby-air-riders.md) is the plan and says what is
+missing. Most of the pages below still describe Hookshot and Ocarina, because that is what the engine is.
 
 This page covers what to send, how to build and test it, and the rules that keep the project out of trouble. The
 [development guide](docs/development.md) has the full pipeline and its commands; the [design notes](docs/design.md)
@@ -43,7 +49,7 @@ game data, leave it out.
 - One topic per issue or pull request. Do not mix a fix with a refactor or a batch of unrelated changes.
 - Report the version you actually ran: the release name, or the first line of `hookshot_log.txt`.
 - Test without ReShade, shader-cache tools, overlays and frame-generation injectors when you report a graphics or
-  performance problem. They change what Hookshot does.
+  performance problem. They change what Dragoon does.
 
 ## Development setup
 
@@ -77,7 +83,7 @@ about 10 GB of RAM.
 
 ### Linux
 
-Either use the `Hookshot-<version>-x86_64.AppImage` from the Releases page, or build the environment and the AppImage
+Either use the `Dragoon-<version>-x86_64.AppImage` from the Releases page, or build the environment and the AppImage
 yourself:
 
 ```sh
@@ -86,9 +92,9 @@ scripts/linux/appimage.sh   # the AppImage, in build-linux/
 ```
 
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
-compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
+compile at once. The inherited README's [Linux section](docs/hookshot-readme.md#on-linux) has the details and the runtime paths.
 
-### Hookshot Builder
+### Dragoon Builder
 
 The builder is a .NET 8 WPF app. Open `builder/HookshotBuilder.sln` in Visual Studio 2022 with the .NET desktop
 workload, or build it from a developer prompt:
@@ -108,8 +114,8 @@ window, including one started to update a game, uses Automatic again.
 
 | Command | What it does |
 |---|---|
-| `python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot" --language en-US` | Build a complete game folder from a `.nup`. A build takes about 40 minutes. |
-| `python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Hookshot"` | The same, from extracted folders. |
+| `python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Dragoon" --language en-US` | Build a complete game folder from a `.nup`. A build takes about 40 minutes. |
+| `python -I nx2/make_game.py --romfs "C:\path\romfs" --exefs "C:\path\exefs" --out "C:\Games\Dragoon"` | The same, from extracted folders. |
 | `python -I nx2/make_game.py --check --nup "C:\path\your-game.nup"` | Check the game and its version without building. |
 | `python -I nx2/dump.py --dump <folder with exefs/ and romfs/> --set` | Record the dump in `work/dump.txt`. |
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
@@ -212,7 +218,7 @@ the trailers that describe it; if you wrote the change yourself, there is nothin
 
 ## Licensing
 
-Hookshot is free software under the [GNU General Public License, version 3 or later](LICENSE). By submitting a change
+Dragoon is free software under the [GNU General Public License, version 3 or later](LICENSE). By submitting a change
 you agree to license it under those terms. Only send code you can license that way. Do not paste code from a project
 with an incompatible license, and do not paste decompiled game code or anything generated from the dump into a PR.
 
@@ -223,7 +229,7 @@ keep their own notices. Preserve them, and do not relicense their code.
 
 - **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
 - **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
-  web ports, and that channel is where Hookshot talk belongs.
+  web ports, and that channel is where Dragoon talk belongs.
 - **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than

@@ -1,5 +1,9 @@
 # Hookshot (oot-recomp)
 
+*(Inherited from Hookshot, the Ocarina of Time port this fork came from, and still written about that game. Dragoon's
+own plan is [kirby-air-riders.md](kirby-air-riders.md); nothing below has been re-checked against Kirby Air Riders,
+which cannot be built here.)*
+
 **Hookshot** is the port's name (as Skybound is TOTKPort's and BlueShell is mkw-recomp's); the repository folder
 stays `oot-recomp`. The game builds as `hookshot.exe` + `hookshot_vk.dll`.
 

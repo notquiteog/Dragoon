@@ -1,5 +1,5 @@
 # What a Windows player downloads, made without game data: HookshotBuilder-Setup.exe (builder/setup/setup.c, with
-# llvm-mingw) and the Hookshot Builder package (dotnet publish, versioned from the tag as docs/versioning.md says), split
+# llvm-mingw) and the Dragoon Builder package (dotnet publish, versioned from the tag as docs/versioning.md says), split
 # into the parts the setup downloads by scripts/make_setup_parts.py. The Python, emsdk, CPM and wgpu-native parts, and the
 # third_party part's prebuilt files, are the latest release's (scripts/release_parts.py). The Windows Vulkan back end is
 # compiled too, with the same llvm-mingw: players build it on their PC, this only checks that it still builds.
@@ -27,7 +27,7 @@ defaults:
 
 jobs:
   package:
-    name: Hookshot Builder package and setup
+    name: Dragoon Builder package and setup
     # (builder-parts holds the installer's parts: no package there)
     if: github.ref_name != 'builder-parts'
     runs-on: windows-2022
@@ -99,7 +99,7 @@ jobs:
             -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -o "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
           ls -l "$RUNNER_TEMP/HookshotBuilder-Setup.exe"
 
-      - name: Hookshot Builder
+      - name: Dragoon Builder
         run: >-
           dotnet publish builder/HookshotBuilder/HookshotBuilder.csproj --configuration Release
           -p:Version="$VERSION" -p:NuGetAudit=false --output "$RUNNER_TEMP/publish"
