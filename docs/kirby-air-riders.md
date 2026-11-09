@@ -392,12 +392,18 @@ Kirby Air Riders itself.
 
 ## 7. Outstanding on this branch
 
-- **A rebase.** This branch was cut from Hookshot `0196314` and finished against it. Upstream `main` has moved on
-  since (the FSR/DLSS work merged, tagged `v2.1.0`), and rebasing onto it has not been done. The renderer is where
-  that work landed and where this branch touched only `gpu/vk/vk_main.cpp`'s three title strings, so the conflicts
-  should be small, but they are real and unexamined.
-- **Nothing is pushed anywhere.** There is no repository for this fork; the work is a local branch,
-  `fork/kirby-air-riders`, in a clone of its own. Where it lands is not this branch's decision.
+- **The rebase is done.** This branch was written against Hookshot `0196314` and is now rebased onto `v2.3.1-5`
+  (274 commits). Two files conflicted, both in the input path, and both because upstream added Ocarina's debug
+  tools (flight, free camera, the `!cheat` live command) to the very places this fork changed:
+  `host/nn_hid.c`'s `read_input` signature and the one line in `npad_states` that reads the pad. Upstream's block
+  was kept whole and is now gated on `player == 0` alongside Ocarina's title and frame-step hooks, because the
+  flight and free-camera state is a single pair of globals the game reads and there is one title screen: a second
+  player's pad must not be able to move the debug camera. `tests/test_multi_pad.py` extracts that block and spies
+  its callbacks, so a case fails if the debug path is ever entered, and it asserts the `player == 0` gate is still
+  there. `gpu/vk/vk_draw.cpp` took 1,113 lines of upstream change and conflicted not at all, because this fork
+  never touched it.
+- **The fork's own history is four commits on top of upstream**, each of which builds and passes its own checks in
+  isolation (verified in a throwaway worktree, not just at the tip).
 - **The host runtime is not compiled by the check that runs here.** `RX_VK_ONLY=1` builds the renderer alone, so
   `host/nn_hid.c`, `host/pad_sdl.c` and `host/nn_ldn.c` are not in it. They were checked another way: `gcc
   -fsyntax-only -Wall -Wextra` over each whole file, and the tests above compile the parts that matter with
