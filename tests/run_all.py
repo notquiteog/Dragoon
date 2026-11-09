@@ -32,6 +32,8 @@ ARGS = {
     "tests/test_system_header_cache.py": ["--cc", "clang"],
     "tests/test_precompile_compute_guard.py": ["--cxx", "clang++"],
     "tests/test_input_background.py": ["--cc", "gcc"],
+    "tests/test_multi_pad.py": ["--cc", "gcc"],
+    "tests/test_ldn_refused.py": ["--cc", "gcc"],
     "nx2/test_import_windows.py": ["--cxx", "g++"],
     "tests/test_lower_depbar.py": ["--cxx", "clang++"],
     "tests/test_lower_register_markers.py": ["--cxx", "clang++"],

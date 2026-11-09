@@ -9,6 +9,10 @@ runtime defines as `HLE(<mangled name>)` / `void imp_<mangled name>(Ctx *c)` is 
 at the sdk's own definition. Every other free function of an OS-facing namespace the game imports gets a generated
 stub that logs its first call and returns 0. The rest of the SDK (libc, nn::util, nn::mem, std, the NVN driver)
 runs as lifted code.
+
+(kirby) One exception to "returns 0": a namespace in REFUSED_NAMESPACES gets a stub that refuses instead, because 0
+is ResultSuccess and a service nothing implements must not report that it worked. nn::ldn is the one, and
+host/nn_ldn.c is its refusal.
 """
 import os
 import re
@@ -123,15 +127,35 @@ def demangle(syms):
         return {s: s for s in syms}
 
 
+# (kirby) Namespaces whose unimplemented imports must not be answered 0. The generic stub (a64_unimplemented) sets
+# x0 = 0, which in the nn:: SDK is ResultSuccess, so for a service nothing implements it reports that every call
+# worked while writing nothing into the out-parameters the game passed. For nn::ldn (local wireless) that is a lie
+# with no traceable consequence: see host/nn_ldn.c and docs/kirby-air-riders.md section 4. Those stubs are routed to a
+# refusal in host/ instead, which logs the symbol and answers a failure.
+#
+# This is driven by the symbol names the dump actually has, not by a list written out here, so it cannot silently miss
+# a function: every nn::ldn:: import the game makes is routed, whatever it is called.
+REFUSED_NAMESPACES = {"ldn": "hos_ldn_refuse"}
+
+
+def refusal_for(sym):
+    """The host function an unimplemented import of this symbol goes to, or None for the generic stub. The same
+    free-function test os_facing applies, so this routes exactly the symbols that become stubs and nothing else."""
+    parts = nested_name(sym)
+    return REFUSED_NAMESPACES.get(parts[1]) if parts and os_facing(sym) else None
+
+
 def gen_stubs(gen, meta):
     have = implemented() | {"imp_" + h["sym"] for h in meta["hooks"] if nvn_proc_name(h["sym"])}
     hooks = [h for h in meta["hooks"] if h["c"] not in have]
     dm = demangle([h["sym"] for h in hooks])
-    lines = ['#include "a64.h"', "void a64_unimplemented(Ctx *A64_NOESC c, const char *sym, int *seen);", ""]
+    lines = ['#include "a64.h"', "void a64_unimplemented(Ctx *A64_NOESC c, const char *sym, int *seen);"]
+    lines += ["void %s(Ctx *A64_NOESC c, const char *sym, int *seen);" % f
+              for f in sorted(set(REFUSED_NAMESPACES.values()))] + [""]
     for h in hooks:
         lines.append("/* %s */" % dm[h["sym"]].replace("*/", "* /"))
-        lines.append('void %s(Ctx *A64_NOESC c) { static int seen; a64_unimplemented(c, "%s", &seen); }'
-                     % (h["c"], h["sym"]))
+        lines.append('void %s(Ctx *A64_NOESC c) { static int seen; %s(c, "%s", &seen); }'
+                     % (h["c"], refusal_for(h["sym"]) or "a64_unimplemented", h["sym"]))
     text = "\n".join(lines) + "\n"
     path = os.path.join(gen, "a64_stubs.c")
     if not os.path.exists(path) or open(path).read() != text:
