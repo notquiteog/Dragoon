@@ -52,7 +52,10 @@ def main():
     constants += block(api, "enum { HOS_PAD_SOUTH") + ";\n" + block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"
     constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"   # (Ocarina's debug tools, which npad_states reads)
     constants += block(api, "enum { HOS_BIND_PAD") + ";\n"   # (the live input's !bind)
-    constants += block(api, "enum { HOS_OPT_AUTO_RUN") + ";\n"   # (Auto run: off here, rx_option answers 0)
+    constants += block(api, "enum { HOS_OPT_AUTO_RUN") + ";\n"
+    # (the game profile's default player count, which npad_players falls back to: the committed header's, Ocarina's 1)
+    constants += re.search(r"^#define GAME_NPAD_PLAYERS [^\n]+", (ROOT / "game/game_profile.h").read_text(encoding="utf-8"),
+                           re.M).group(0) + "\n"   # (Auto run: off here, rx_option answers 0)
     constants += (ROOT / "host/auto_run.h").read_text(encoding="utf-8") + "\n"
     for name in ("STATE_SIZE", "NPAD_NO1", "STYLE_FULLKEY", "ATTR_CONNECTED", "NPAD_PLAYERS_MAX",
                  "RUMBLE_HEAVY_TOP", "RUMBLE_LIGHT_BOTTOM"):

@@ -30,6 +30,7 @@
    Npad states share one layout (NpadCommonState): { s64 sampling; u64 buttons; s32 lx, ly; s32 rx, ry; u32 attributes;
    pad } = 0x28 bytes. */
 #include "hos.h"
+#include "game_profile.h"   /* (dragoon: the default player count) */
 #include "hos_paths.h"
 #include "control.h"
 #include <math.h>
@@ -886,7 +887,8 @@ static int npad_players(void) {
     int n = asked;
     if (!n) {
         const char *e = getenv("HOS_NPAD_PLAYERS");
-        n = !e || !*e ? 1 : !strcmp(e, "auto") || !strcmp(e, "AUTO") ? -1 : atoi(e);
+        /* (dragoon) unset: the game profile's count (game_profile.h: Ocarina's 1, Kirby Air Riders' -1, auto) */
+        n = !e || !*e ? GAME_NPAD_PLAYERS : !strcmp(e, "auto") || !strcmp(e, "AUTO") ? -1 : atoi(e);
         if (n != -1 && n < 1) n = 1;
         if (n > NPAD_PLAYERS_MAX) n = NPAD_PLAYERS_MAX;
         asked = n;

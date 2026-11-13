@@ -63,7 +63,10 @@ def main():
     constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls)
     constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
     constants += block(api, "enum { HOS_BIND_PAD") + ";\n"   # (the live input's !bind)
-    constants += block(api, "enum { HOS_OPT_AUTO_RUN") + ";\n"   # (Auto run: off here, rx_option answers 0)
+    constants += block(api, "enum { HOS_OPT_AUTO_RUN") + ";\n"
+    # (the game profile's default player count, which npad_players falls back to: the committed header's, Ocarina's 1)
+    constants += re.search(r"^#define GAME_NPAD_PLAYERS [^\n]+", (ROOT / "game/game_profile.h").read_text(encoding="utf-8"),
+                           re.M).group(0) + "\n"   # (Auto run: off here, rx_option answers 0)
     constants += (ROOT / "host/auto_run.h").read_text(encoding="utf-8") + "\n"
     for name in ("STATE_SIZE", "NPAD_NO1", "ATTR_CONNECTED", "NPAD_PLAYERS_MAX"):
         matches = re.findall(r"^#define " + name + r"\s+[^\n]+", hid, re.M)
