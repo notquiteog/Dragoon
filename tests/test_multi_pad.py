@@ -26,21 +26,18 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_ARGS = ["--cc", "gcc"]
 CASES = ("ids", "auto", "own-pad", "script", "rumble")
 PLAYERS = {"ids": "4", "auto": "auto", "own-pad": "2", "script": "3", "rumble": "2"}
 SCRIPT = {"script": "0:A+LUP/200,0:P2+B/200"}
 
 
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 
 def main():
@@ -54,7 +51,11 @@ def main():
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
     constants += block(api, "enum { HOS_PAD_SOUTH") + ";\n" + block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"
     constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"   # (Ocarina's debug tools, which npad_states reads)
-    for name in ("STATE_SIZE", "NPAD_NO1", "STYLE_FULLKEY", "ATTR_CONNECTED", "NPAD_PLAYERS_MAX"):
+    constants += block(api, "enum { HOS_BIND_PAD") + ";\n"   # (the live input's !bind)
+    constants += block(api, "enum { HOS_OPT_AUTO_RUN") + ";\n"   # (Auto run: off here, rx_option answers 0)
+    constants += (ROOT / "host/auto_run.h").read_text(encoding="utf-8") + "\n"
+    for name in ("STATE_SIZE", "NPAD_NO1", "STYLE_FULLKEY", "ATTR_CONNECTED", "NPAD_PLAYERS_MAX",
+                 "RUMBLE_HEAVY_TOP", "RUMBLE_LIGHT_BOTTOM"):
         matches = re.findall(r"^#define " + name + r"\s+[^\n]+", hid, re.M)
         if len(matches) != 1:
             raise SystemExit("host/nn_hid.c: %s is not defined exactly once" % name)
@@ -70,26 +71,38 @@ def main():
     # callbacks are extracted and spied so the cases below prove the debug path stays off: the fixture's rx_option
     # answers -1 for the flight option, which is "no debug tools", and any call into them fails the case.
     cheat_state = re.search(r"^static uint64_t flight_input;\nstatic uint64_t free_camera_axes;\n"
-                            r"static int free_camera_height;", hid, re.M).group(0)
+                            r"static int free_camera_height;\nstatic int move_stick_held;", hid, re.M).group(0)
     cheat_spies = """
 volatile int hos_oot_live_action;
 int hos_oot_flight_shortcut_ready(void) { CHECK(!"unexpected cheat readiness query"); return 0; }
 void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpected cheat option change"); }
+int hos_oot_player_free(void) { return 1; }
+"""
+    # (the host's own presses and stick, for the game's menus' mouse (host/oot_menu.c): none here; the player's input
+    # time it hides the mouse by: not looked at)
+    host_spies = """
+static void host_taps(void) {}
+static void host_stick_read(int32_t stick[4]) { (void)stick; }
+static void host_drag_read(int32_t stick[4]) { (void)stick; }
+static void player_used(void) {}
 """
     actual = "\n".join((
-        cheat_state, cheat_spies,
+        cheat_state, cheat_spies, host_spies,
         block(hid, "static int key("), block(hid, "static int kmap_down("), block(hid, "static int game_in_front("),
         presses, block(hid, "static void stick_max("), block(hid, "static int pads_in_background("),
         block(hid, "static int npad_players("), block(hid, "static int npad_player("),
         block(hid, "static int npad_player_connected("),
-        block(hid, "static uint64_t pads_mapped("), block(hid, "static int pads_read_one("),
+        block(hid, "static uint64_t bound_pad_buttons("), block(hid, "static uint64_t pads_mapped("),
+        block(hid, "static int pads_read_one("), block(hid, "static int pads_merge("), block(hid, "static int pads_behind("),
         block(hid, "static int mouse_vk_slot("), re.search(r"^static int mouse_armed\[5\];", hid, re.M).group(0),
         block(hid, "static void mouse_buttons_arm("), block(hid, "static int bound_down("),
+        block(hid, "static void oc_notes("), block(hid, "static uint64_t oc_pad_word("),
         block(hid, "static int flight_jump_shortcut("),
         block(hid, "static void read_input("), block(hid, "static void npad_states("),
         block(hid, "HLE(_ZN2nn3hid15GetNpadStyleSetERKj)"),
         # (the definition, not the forward declaration above npad_states)
-        block(hid, "static float rumble_motor("),
+        block(hid, "static float rumble_motor("), block(hid, "static float rumble_heavy_share("),
+        block(hid, "static void rumble_map("),
         block(hid, "static void vibration_send(uint64_t handle, uint64_t value) {")))
     # production reads one controller per player: a merged read in the per-player path would defeat the whole point
     per_player = block(hid, "static int pads_read_one(")
@@ -117,7 +130,7 @@ void rx_option_set(int id, int value) { (void)id; (void)value; CHECK(!"unexpecte
         (folder / "multi_pad_actual.inc").write_text(actual, encoding="utf-8")
         exe = folder / "fixture.exe"
         # Production's button table deliberately leaves its unused axis fields zero-initialized.
-        run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
+        run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
              "-D_CRT_SECURE_NO_WARNINGS", "-I" + str(folder),
              str(ROOT / "tests/multi_pad_test.c"), "-o", str(exe), "-lm"])
         for case in ((a.case,) if a.case else CASES):

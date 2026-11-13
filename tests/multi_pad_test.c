@@ -33,7 +33,17 @@ static int64_t now_ns = 10000000000LL, sampling;
 static int front = 1, merges, key_queries, mouse_queries;
 static volatile LONG pad_raw_now;
 static int key_bind[HOS_KEY_N][2];
-static volatile LONG pad_bind[HOS_SW_N];
+typedef int SRWLOCK;   /* (host/nn_hid.c guards the pad table with these) */
+#define SRWLOCK_INIT 0
+static void AcquireSRWLockShared(SRWLOCK *p) { (void)p; }
+static void ReleaseSRWLockShared(SRWLOCK *p) { (void)p; }
+static int pad_bind[HOS_KEY_N][2];
+static SRWLOCK pad_bind_lock = SRWLOCK_INIT;
+static int pad_after_menu;
+/* (the ocarina's note layer, player 1's: hos_oc_wait stays 0, so nothing is consumed) */
+static LONG oc_consumed_keys[256];
+static uint64_t oc_consumed_pads;
+volatile uint64_t hos_oc_note_bits; volatile int hos_oc_wait; volatile int hos_oc_last_kind; volatile unsigned hos_oc_beat;
 static unsigned char *memory;
 static char last_log[256];
 static int pads_read_one(int slot, uint64_t *buttons, int32_t stick[4]);   /* production's, in the .inc below */
@@ -54,6 +64,10 @@ static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + a
 
 int rx_option(int id, int otherwise) { return id == 1 ? 0 : otherwise; }
 int64_t hos_now_ns(void) { return now_ns; }
+void hos_prompts_live(void) {}   /* (host/prompts.c: the button prompts follow the controls) */
+volatile int hos_prompts_row = -1;   /* (host/prompts.c: "!prompts" in the live input) */
+void hos_bind(int set, int button, int slot, int code) { (void)set, (void)button, (void)slot, (void)code; }   /* ("!bind") */
+int hos_control_input(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return 0; }   /* (host/control.c: off) */
 void hos_log(const char *format, ...) {
     va_list args; va_start(args, format); vsnprintf(last_log, sizeof last_log, format, args); va_end(args);
 }
@@ -67,8 +81,8 @@ short GetAsyncKeyState(int key) { key_queries++; return key == 'K' ? (short)-327
 
 /* ---- the fake controllers ---------------------------------------------------------------------------------------- */
 static struct { int open; uint64_t buttons; int32_t stick[4]; } slots[NPAD_PLAYERS_MAX];
-static int rumble_slot = -1, rumble_all;
-static float rumble_low_sent, rumble_high_sent;
+static int rumble_slot = -1, rumble_all, rumble_hd_slot = -1, rumble_hd_all;
+static float rumble_low_sent, rumble_high_sent, rumble_hd_sent[4];
 
 int hos_sdl_pad_count(void) {
     int n = 0;
@@ -89,6 +103,11 @@ void hos_sdl_rumble_pad(int slot, float low, float high) {
     rumble_slot = slot; rumble_low_sent = low; rumble_high_sent = high;
 }
 void hos_sdl_rumble(float low, float high) { rumble_all = 1; rumble_low_sent = low; rumble_high_sent = high; }
+/* HD rumble: the game's value as it is, for Switch pads; per pad once more than one player is served */
+void hos_sdl_rumble_hd_pad(int slot, int side, const float value[4]) {
+    (void)side; rumble_hd_slot = slot; memcpy(rumble_hd_sent, value, sizeof rumble_hd_sent);
+}
+void hos_sdl_rumble_hd(int side, const float value[4]) { (void)side; rumble_hd_all = 1; (void)value; }
 int hos_sdl_pads(uint64_t *buttons, int32_t stick[4]) { (void)buttons; (void)stick; return hos_sdl_pad_count(); }
 
 /* The one dispatch line this fixture stands in for. Every case here serves more than one player, so production must
@@ -100,14 +119,16 @@ void pads_read(int slot, uint64_t *buttons, int32_t stick[4]) {
     pads_read_one(slot, buttons, stick);
 }
 void binds_load(void) {
-    for (int i = 0; i < HOS_SW_N; i++) pad_bind[i] = -1;
-    pad_bind[HOS_SW_A] = HOS_PAD_EAST;      /* (the shipped defaults for the buttons these cases press) */
-    pad_bind[HOS_SW_B] = HOS_PAD_SOUTH;
-    pad_bind[HOS_SW_PLUS] = HOS_PAD_START;
-    pad_bind[HOS_SW_MINUS] = HOS_PAD_BACK;
+    for (int i = 0; i < HOS_KEY_N; i++) pad_bind[i][0] = pad_bind[i][1] = -1;
+    pad_bind[HOS_SW_A][0] = HOS_PAD_EAST;      /* (the shipped defaults for the buttons these cases press) */
+    pad_bind[HOS_SW_B][0] = HOS_PAD_SOUTH;
+    pad_bind[HOS_SW_PLUS][0] = HOS_PAD_START;
+    pad_bind[HOS_SW_MINUS][0] = HOS_PAD_BACK;
     key_bind[HOS_SW_X][0] = 'K';
 }
 int hos_mouse_native(void) { return -1; }
+void hos_mouse_native_free(int free) { (void)free; }
+void hos_mouse_native_stick(int held) { (void)held; }
 static void mouse_setup(void) {}
 static void mouse_sens_keys(void) {}
 int mouse_stick(int32_t *x, int32_t *y, int held) { (void)x; (void)y; (void)held; mouse_queries++; return 0; }
@@ -234,12 +255,15 @@ int main(int argc, char **argv) {
         G32(64) = 3u | (1u << 8);          /* style FullKey, npad id 1 (No.2), device 0 */
         vibration_send(64, 128);
         CHECK(rumble_slot == 1 && !rumble_all && rumble_low_sent > 0.5f);
-        rumble_slot = -1;
+        /* and the HD value, for a Switch pad, goes to that pad too, as the game sent it */
+        CHECK(rumble_hd_slot == 1 && !rumble_hd_all && rumble_hd_sent[0] == 1.0f);
+        rumble_slot = rumble_hd_slot = -1;
         value[0] = 0.0f;                   /* silence for No.1: it must not undo No.2's */
         memcpy(memory + 128, value, sizeof value);
         G32(64) = 3u;                      /* npad id 0 (No.1) */
         vibration_send(64, 128);
         CHECK(rumble_slot == 0 && !rumble_all && rumble_low_sent == 0.0f);
+        CHECK(rumble_hd_slot == 0 && !rumble_hd_all);
     } else {
         CHECK(0);
     }
