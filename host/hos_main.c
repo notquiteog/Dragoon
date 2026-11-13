@@ -10,6 +10,9 @@
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
 #include "game_profile.h"   /* (dragoon: the game this runtime is compiled for) */
+#ifndef GAME_SAVES_DIR   /* (a header from before the saves had a folder per game: two games would share one) */
+#error "game_profile.h has no GAME_SAVES_DIR: emit it again (python -I nx2/game_profile.py --emit-header), or lift again"
+#endif
 #include "game_profile_check.h"
 #ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
 #include "../gpu/vk/compat/hookshot_env.h"
@@ -301,7 +304,8 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
 }
 
 #ifndef _WIN32
-/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
+/* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot; another game's in hookshot-<key>, below), so a
+   rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
    cannot be moved keeps the old place. --user still wins.
    A symbolic link in it, to saves the player keeps elsewhere (a synced folder, another drive), is made again in the
@@ -407,6 +411,13 @@ static void delete_tree(const char *p) {
     }
     RemoveDirectoryA(p);
 }
+/* (dragoon) Each game's saves in a folder of its own: game_profile.h's GAME_SAVES_DIR, Ocarina's "hookshot", Kirby's
+   "hookshot-kar". The save folder has no word of which game wrote it, so a second game's first run wrote into Ocarina's
+   saves (DK Bananza fork, 4f417fd7 and 58d94fb4). The fallback is for tests/test_linux_saves_move.py, which compiles
+   this code alone; the runtime's own build stops above on a header without the name. */
+#ifndef GAME_SAVES_DIR
+#define GAME_SAVES_DIR "hookshot"
+#endif
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
@@ -418,7 +429,7 @@ static const char *saves_dir(const char *beside) {
         snprintf(dir, sizeof dir, "%s/.local/share", home);
     } else return beside;
     CreateDirectoryA(dir, NULL);
-    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/hookshot");
+    snprintf(dir + strlen(dir), sizeof dir - strlen(dir), "/" GAME_SAVES_DIR);
     CreateDirectoryA(dir, NULL);
     if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
     char pattern[MAX_PATH];

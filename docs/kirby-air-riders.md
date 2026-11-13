@@ -535,6 +535,11 @@ Each wall was hit, fixed where its meaning was plain, and the boot run again:
    from `nnMain` at `0x85bc8f4c`) has no names. Finding which load builds that address, from which value, is the next
    piece of work; it was not guessed at.
 
+Saves: these runs passed `--user work/kar/user` and never reached a save mount, so nothing was written outside
+`work/`. Started without `--user`, the runtime used to put every game's saves in `$XDG_DATA_HOME/hookshot`, Ocarina's
+folder; Kirby's is now `hookshot-kar` (`GAME_SAVES_DIR`, below), and a run should still pass `--user` or its own
+`XDG_DATA_HOME` until it has been rebuilt with that.
+
 Still answered by the generic stub on the way (0 and nothing written): `nn::ro::ProtectRelro` and `Initialize`,
 `nn::oe::GetPseudoDeviceId`, `nn::hid::InitializeTouchScreen`. One line is Ocarina's and says nothing about Kirby:
 "the depth mode is not the one the prepared shaders were made for" refers to Ocarina's prepared shaders.
