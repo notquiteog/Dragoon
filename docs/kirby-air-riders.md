@@ -5,11 +5,13 @@
 This is a survey, written before any code in this branch changed. It asks one question: if a *Kirby Air Riders*
 (Switch 2) dump were put in front of this engine, what would it already do, and what would have to be built?
 
-**Nothing here was run against Kirby Air Riders.** There is no Kirby dump on this machine; the only dump is Ocarina
-of Time's, and game data never enters this repository. Every statement below is about code in this repository, with
-the file and line it comes from. Where a value would have to come from the game, it says so and says how it would be
-found — it is never guessed at. The evidence that this branch is sound is that Ocarina still builds and its checks
-still pass.
+**Correction, 2026-11-13: there is a Kirby dump on this machine.** The survey said there was none because it searched
+`/` only; the `.nup` sits on the second drive, where the Eglantine emulator reads it (§8). Sections 1 to 7 are the
+survey as written, with the table in §1 brought up to date; §8 is what the dump has said since. Game data still never
+enters this repository: the dump is read where it lies, and the extracted modules and the lift stay in the gitignored
+`work/`. Where a value would have to come from the game, this document says how it was found, or that it has not been
+— it is never guessed at. The evidence that the shared engine is sound is still that Ocarina builds and its checks
+pass.
 
 The lineage matters for reading this: mkw-recomp (Mario Kart World) → Hookshot (Ocarina of Time) → this branch.
 Mario Kart World is a four-player racer with online play, so some of what Kirby needs was once exercised by MKW and
@@ -27,14 +29,19 @@ is still here; the Ocarina retarget is what narrowed the input path to one pad.
 | Per-pad rumble | **was global**; this branch routes by npad id | done (§3) |
 | `ldn` (local wireless) | **answered `0` = success by the generic stub**: a lie | this branch refuses loudly (§4) |
 | Online play (`nifm`, `socket`, `ssl`, `account` network service) | deliberately offline, failures returned | a project, out of scope |
-| Game-specific layer (patches, graphics-module offsets, upscaler key) | **hardcoded to Ocarina** | §5: a profile, being built elsewhere |
-| Four player profiles (`nn::account`) | one user, hardcoded | a day, §6 |
+| Game-specific layer (patches, graphics-module offsets, upscaler key) | **was hardcoded to Ocarina**; now `nx2/game_profile.py`, chosen by main's build id | done (§5) |
+| Four player profiles (`nn::account`) | **was one user**; now 1..8 users, the profile's count (Kirby: 4), and a user selector | done (§6) |
 | Split-screen / four viewports in the renderer | nothing to do: the replay follows the game | — |
-| Build gate on Ocarina's build id | hardcoded, `nx2/make_game.py:38` | an hour, §5 |
+| Build gate on Ocarina's build id | **was hardcoded**; now every build a profile knows (Ocarina's, Kirby's) | done (§5) |
+| A Kirby dump | **there**: v1.3.3, read in place | §8 |
+| Kirby's lift: instruction coverage | **100.0000 %** of 26.5 M instructions, 279,081 functions | done (§8) |
+| Kirby's one TLS descriptor (DLSS library) | loader refused it; now bound to a named stop | the TLS itself is open (§8) |
+| Kirby's graphics-module offsets, clock return address, upscaler keys, patches | not found yet: the profile says so and turns those features off | needs runs (§8) |
+| Kirby build and boot | **builds**; boots to `nnMain`, hid and the NVN device, then crashes in a job worker | §8: the next wall |
 
-The short version: **the engine is not the problem, the game-specific layer is.** Four-player input was a day's
-work and is in this branch. `ldn` is a project and is not attempted. Everything that actually blocks a Kirby boot is
-the per-game profile of §5, plus the unknowns that can only be found by lifting the dump.
+The short version, as written: **the engine is not the problem, the game-specific layer is.** Four-player input was
+a day's work and is in this branch. `ldn` is a project and is not attempted. Since then the game-specific layer has a
+seam (§5), and the dump has been lifted (§8): what blocks a boot now is listed there.
 
 
 ## 2. What this engine already provides that Kirby needs
@@ -331,6 +338,35 @@ What the seam itself needs, stated as requirements:
    set `auto`, Ocarina's would leave it at one, and neither would need an environment variable.
 
 
+### What was built (2026-11-13)
+
+The seam is `nx2/game_profile.py`, in the shape Lakitu (the Mario Kart World fork, `fork/mario-kart-world` at
+`8c47a50`) gave it: the same file, the same `Profile`, `Gfx` and `Upscale` fields, the same committed C view
+`game/game_profile.h` with the same `GAME_*` macros, and the same rule that an unknown value is `None` and turns its
+feature off. A profile written for one fork reads the same in the other. Where Dragoon's requirements above went
+further, it adds to that shape rather than changing it:
+
+| Requirement | How it is met |
+|---|---|
+| 1. chosen by build id, not a flag | `for_build()` matches main's build id; `HOOKSHOT_GAME=<key>` still overrides. A build no profile knows gets `none`: nothing patched, nothing hooked. Lakitu picks by `HOOKSHOT_GAME` alone. |
+| 2. lift patches are a list | `nx2/lift.py` installs `profile.patch_modules` and passes `profile.code_patch_module` to `chunks.edit_c`; it names no game. Ocarina's modules are unchanged (they already check each site's instruction word), so upstream's fixes to them still apply. |
+| 3. every guest offset from the profile, `None` turns it off | `host/nn_vi.c` reads the graphics module's offsets from `game_profile.h`. The module is only captured at the profile's return address (`Hooks.gfx_clock`, Ocarina's `0x8348c770`), and only when the running image's build id is the profile's (`hos_game_profile_live()`), so on any other game nothing is written. `host/game_profile_check.h` stops a build whose profile names the module but not its offsets. The present-poll experiments' return addresses go the same way. |
+| 4. the renderer's program keys are data | The renderer is built once for every game (the AppImage's is prebuilt), so it keeps `game/game_profile.h`'s keys as defaults and the runtime, compiled for its game, hands it its own through `HOOKSHOT_PROFILE_*` at start. `RX_VK_TAAU_KEYS` and `RX_VK_NETWORK_KEEP` still stand over both. |
+| 5. `HOS_NPAD_PLAYERS` in the profile | `npad_players`: Ocarina 1, Kirby `auto`. The variable still overrides. |
+| the build-id gate | `make_game.py` accepts every build a profile knows and names the game in its check. |
+
+A standalone lift writes the dump's own profile to `<work>/sa/game/game_profile.h`, and `nx2/build.py` puts that
+folder ahead of `game/` for the runtime. `tests/test_game_profile.py` checks the choice by build id, that the Kirby
+and empty profiles patch nothing, that Ocarina's modules leave out every site whose word differs, that no Ocarina
+offset, return address, program key or build id is left as a literal outside the profile, that the committed header
+is what the profile emits, and that the C guard rejects a half-filled profile.
+
+The Kirby profile (`kar`) holds only what was measured on the dump: program id, version, main's build id and main's
+base (§8). Everything else is empty, with a comment saying how it would be found.
+
+Not moved, on purpose: Ocarina's host features (`host/oot_*.c`, the title and frame-step hooks) are reached only from
+Ocarina's code patches, which a game without them never installs, so they need no gate of their own.
+
 ## 5a. The rename, and what was deliberately not renamed
 
 The product is **Dragoon** now: the window and its class, the console title and the graphics-card warning
@@ -360,11 +396,12 @@ What was left alone, on purpose:
 
 Honest list, in the order it would be hit.
 
-1. **No dump.** Nothing can be lifted, built or booted. Everything below is reasoning from code, not from a run.
+1. **No dump.** As written: nothing can be lifted, built or booted. There was one after all; §8 is the run.
 2. **Stage S0-S1 on the real dump**: the six Switch-2 signals, then full instruction coverage. MKW and Ocarina each
    needed new instruction forms (UDOT for Ocarina, `nx2/insn.py`); Kirby will need whatever it uses that neither
    did, and that is a day or two of `nx2/test_insn.py` against Unicorn — a well-worn path, but not a free one.
 3. **The SDK version.** Ocarina is SDK/NVN2 22.2.8, MKW 21.4.0 (`docs/design.md` §5). Kirby ships later than both.
+   (§8: Kirby's SDK is in fact older, 20.5.26. The same kind of work applies, from the other side.)
    A newer SDK means more NVN2 procs, possibly new `nn::os` overloads reaching kernel calls the runtime lacks —
    which is exactly the list Ocarina's S3 had to work through. Expect a week of boot work, with the log naming each
    missing piece as it is hit.
@@ -372,8 +409,14 @@ Honest list, in the order it would be hit.
    improvement rather than a requirement — but the frame limiter, dynamic resolution, widescreen and the upscaler
    stand-in will all be inert or wrong, and the build-id gate in `make_game.py` refuses outright until it is
    changed.
-5. **Four player profiles.** `nn::account` is one hardcoded user (`host/nn_applet.c:153`, `322`). A four-player
-   game may ask for a user per player, or may treat players 2-4 as guests. A day, once it is known which.
+5. **Four player profiles.** `nn::account` was one hardcoded user. Kirby's main imports `ShowUserSelector`,
+   `OpenUser`, `PushOpenUsers`, `PopOpenUsers` and `LoadProfileImage`, and not `ListAllUsers`: it has players pick
+   accounts. Done: `HOS_ACCOUNT_USERS=<1..8>`, unset the profile's count (Ocarina 1, Kirby 4). User 1 keeps the uid it
+   always had, so its save folder is the same; users 2 and up are "Player 2" and on, each with its own save folder.
+   `ShowUserSelector` has no picker to show, so it hands out the first user not open and answers a failure once all
+   are; it logs the settings it was given, whose layout is not known here. `LoadProfileImage` and the token cache
+   answer failures rather than invented data. `GetUserId` now answers the handle's own user, not user 1.
+   `tests/test_account_users.py`.
 6. **`ldn`.** Single-player boots under §4's refusal. Local four-player over real wireless is a project and is not
    attempted here. Four players on **one** PC with four pads is what §3 provides and needs no `ldn` at all —
    whether Kirby's own four-player mode is written as local-wireless-only or as same-console split screen is the
@@ -392,21 +435,123 @@ Kirby Air Riders itself.
 
 ## 7. Outstanding on this branch
 
-- **The rebase is done.** This branch was written against Hookshot `0196314` and is now rebased onto `v2.3.1-5`
-  (274 commits). Two files conflicted, both in the input path, and both because upstream added Ocarina's debug
-  tools (flight, free camera, the `!cheat` live command) to the very places this fork changed:
-  `host/nn_hid.c`'s `read_input` signature and the one line in `npad_states` that reads the pad. Upstream's block
-  was kept whole and is now gated on `player == 0` alongside Ocarina's title and frame-step hooks, because the
-  flight and free-camera state is a single pair of globals the game reads and there is one title screen: a second
-  player's pad must not be able to move the debug camera. `tests/test_multi_pad.py` extracts that block and spies
-  its callbacks, so a case fails if the debug path is ever entered, and it asserts the `player == 0` gate is still
-  there. `gpu/vk/vk_draw.cpp` took 1,113 lines of upstream change and conflicted not at all, because this fork
-  never touched it.
-- **The fork's own history is four commits on top of upstream**, each of which builds and passes its own checks in
-  isolation (verified in a throwaway worktree, not just at the tip).
-- **The host runtime is not compiled by the check that runs here.** `RX_VK_ONLY=1` builds the renderer alone, so
-  `host/nn_hid.c`, `host/pad_sdl.c` and `host/nn_ldn.c` are not in it. They were checked another way: `gcc
-  -fsyntax-only -Wall -Wextra` over each whole file, and the tests above compile the parts that matter with
-  `-Werror`. A full `nx2/build.py --standalone` on a machine with the dump is what would prove the link.
-- **`HOS_NPAD_PLAYERS` defaults to one player**, so the four-player path ships off. Section 3 says why, and
-  section 5 says that turning it on belongs in the Kirby profile rather than in an environment variable.
+- **Hookshot v2.3.0-rc.1 is merged** (`c78af5fc`, 1,483 commits past the old base `v2.3.1-5`, among them the 126
+  taken from the mirror of the gone NotRexed/Hookshot). 22 files conflicted. The input path was the substantial one:
+  upstream added HD rumble, motion, Steam stand-in pads, paddles, the touchpad click, a stick dead zone, the
+  ocarina's note layer and the control bridge exactly where the per-player reads live. The player layer is kept;
+  the bridge, the notes, the host's taps and the keyboard and mouse stay with player 1; HD rumble goes per pad as
+  motor rumble already did. The rest were the product name meeting upstream's new strings. The merge commit says
+  what each took.
+- **Checked here**: `tests/run_all.py` on Linux with the repository's toolchain, at each commit; the renderer built
+  alone (`RX_VK_ONLY=1`) with the profile header; the host files that read the profile compiled against Ocarina's,
+  Kirby's and the empty profile's headers.
+- **Not checked here**: a full Ocarina build and run. There is an Ocarina dump on the second drive too (§8), so this
+  is now possible; it was not done in this pass, and it is the next thing that would prove the merge and the seam on
+  the game that already ran.
+- **`HOS_NPAD_PLAYERS` and `HOS_ACCOUNT_USERS` default from the profile**: Ocarina 1 and 1, Kirby `auto` and 4.
+
+## 8. The dump, and the first lift (2026-11-13)
+
+The survey searched `/` and found no dump. The second NVMe drive holds the Switch 2 `.nup` files the Eglantine
+emulator plays (its `romsPath`), among them `Kirby Air Riders [040077201BE50000][v1.3.3].nup` (41.8 GB) and Ocarina's.
+Everything below was read from that file in place; the extracted modules, the romfs, the lift and the build are in the
+gitignored `work/kar/`, and none of it is in the repository.
+
+### What the dump is (`nx2/nup.py`, `nx2/dump.py --no-romfs`)
+
+- Two titles: the base (v0) and the update, v458752, which is what was lifted. Romfs 21.3 GB, 621 files.
+- **Switch 2 by all six signals.** Program id `040077201BE50000`. 39-bit address space, main thread priority 44,
+  core 0, 1 MB stack, system resource 32 MB.
+- **SDK and NVN 20.5.26.** Older than Ocarina's 22.2.8 and MKW's 21.4.0, not newer as §6 expected.
+- Modules (rtld's load order):
+
+  | module | build id | .text | .rodata | .data | .bss |
+  |---|---|---|---|---|---|
+  | rtld | 184b92f6e9da4716d3110a8b6295a067197855de | 9,856 | 2,692 | 49,160 | 65,528 |
+  | main | 9ede03836568bcd34434dfc29bc61e0451dbbe3e | 96,143,504 | 46,653,588 | 10,124,984 | 1,999,176 |
+  | subsdk0 | 11a5672eeabf787e8e510902825606d41714645e | 2,332,800 | 17,984,028 | 739,840 | 108,032 |
+  | subsdk1 | 3cd75f1ea17d5e590b8f4326a521849f2dd2bc45 | 937,920 | 174,076 | 55,049,304 | 132,008 |
+  | sdk | 89ea3537110354e8427004a0266744c8ffe506dc | 8,092,176 | 6,227,604 | 391,280 | 1,996,688 |
+
+  main's code is half again Ocarina's (63 MB). subsdk1 is NVIDIA's DLSS library for NVN (`NVNdlssLibrary`, its 55 MB
+  of data the networks). main names 733 NVN procs, 66 of them DLSS or mesh-task ones, and carries middleware for
+  PhysX 5.2, `SMAA_For_NDSR`, the movie player and NPLN (online: gRPC, WebRTC, ngtcp2).
+- The services it may open include `ldn:u` (local wireless), `irs`, `nfc`/`nfp` (amiibo), `friend`, `bcat`, `nifm`,
+  `bsd`/`ssl` and `caps` (screenshots).
+
+### The lift (`nx2/lift.py`)
+
+- **The loader stopped first**: `subsdk1: relocation type 1031 at 0x1197b0 not supported`. 1031 is
+  R_AARCH64_TLSDESC, a thread-local variable reached through a descriptor; the whole game has one, in the DLSS library,
+  with no symbol. a64-kit's loader takes none. `nx2/image.py` now binds each descriptor to a host stop
+  (`hos_tlsdesc_unsupported`, which names it and ends the run if the game ever calls it): the TLS itself is still not
+  implemented.
+- Past that, **100.0000 % of 26,456,886 instructions translate** in 278,254 functions (standalone: 279,081 in the
+  plain lift), with 11,143 jump tables and one `br` without a table (`0x84a04b68`, x9). No new instruction form was
+  needed, unlike Ocarina's UDOT. 13,440 sites reach undefined encodings (traps, as on the hardware).
+- The standalone lift took 11.5 minutes and 7 GB and wrote 411 files, 2.0 GB of C. The `kar` profile was chosen by
+  main's build id; it installs no patches and no code patches, and its header went beside the C.
+- 535 functions are answered by `host/`; **292 OS-facing imports are stubbed**, by namespace: `codec` 59 (Opus),
+  `socket` 47, `audio` 33, `nfp` 30 (amiibo), `album` 23 (screenshots), `hid` 22, `ldn` 17, `nifm` 9, `ro` 9,
+  `swkbd` 8, `oe` 6, `bcat` 6, `friends` 5, and a few each of `vi`, `time`, `ssl`, `pctl`, `movie`, `chat`, `pl`.
+
+What those say:
+
+- **`ldn` (§4's open question, answered):** 17 functions, all routed to the refusal: `Initialize`, `Finalize`,
+  `GetState`, `Scan`, `Connect`, `Disconnect`, `CreateNetwork`, `DestroyNetwork`, `OpenAccessPoint`,
+  `CloseAccessPoint`, `OpenStation`, `CloseStation`, `GetNetworkInfo` (two forms), `SetAdvertiseData`,
+  `SetProtocol`, `SetStationAcceptPolicy`. That is a whole local-play implementation; whether single-console
+  four-player avoids it is still for a run to say.
+- **`hid`:** the game reads its pads with `GetNpadState` (one state), not `GetNpadStates`. That went to the generic
+  stub, which writes nothing: no input at all. **Fixed** (`3b6d6b81`): the single form for FullKey, Handheld, JoyDual,
+  JoyLeft and JoyRight. Still stubbed: the GameCube controller's state (no GameCube style is ever reported),
+  `GetNpadJoyHoldType`, the Joy-Con assignment modes, `GetPlayerLedPattern`, vibration files and devices, six-axis
+  rest and stop, the touch screen's init, and `SetExplainText` for the controller-support applet.
+- **`account`:** see §6, item 5; the user selector and the open-user stack are answered now.
+
+### The build and the boot
+
+**Built**: `nx2/build.py --standalone --jobs 16` compiled 831 files in 23 minutes, 0 failed; `hookshot` is 569 MB,
+`hookshot_vk.so` 19 MB. The first link found the five `GetNpadState` stubs of a lift made before that fix beside the
+host's own; a fresh lift (287 stubs) linked.
+
+**Booted**, headless and muted (`HOS_HEADLESS=1 HOS_AUDIO=0`, 120 s limit, `hookshot image.bin --romfs ... --user ...`).
+Each wall was hit, fixed where its meaning was plain, and the boot run again:
+
+1. *Run 1.* Runtime start, the renderer on the RTX 5060 Ti, libc's and the SDK's init, `nninitStartup`, main's
+   `DT_INIT`, then **an abort**: main's static initialisers build a `std::random_device`, whose `getentropy` calls
+   `nn::crypto::GenerateCryptographicallyRandomBytes`, which asks `csrng` through `sm:`, which this runtime answers
+   empty. **Fixed** (`host/nn_crypto.c`: the system's random bytes).
+2. *Run 2.* Past that: every module's `DT_INIT`, **`nnMain`**, the romfs mounted, eight fibers made, PhysX's job
+   workers running the game. hid starts: the game supports **styles 0x1f** (FullKey, Handheld, JoyDual, JoyLeft,
+   JoyRight) and **Npad No.1 to No.8 plus handheld** (`SetSupportedNpadIdType`; §3 wanted this line, and it says the
+   game means to have up to eight players). The NVN device is made (427 procs), the window, `BootGraphicsSystem`.
+   Then **a crash** in `phx.JobWorker 4`, reading guest `0x3feb3100500` (above the 39-bit space, so not a pointer the
+   game made in its own memory). `nn::oe::GetDefaultDisplayResolution` and its change event had gone to the generic
+   stub just before, leaving the size as stack garbage, so they were answered (the runtime's output size; an event
+   never signalled).
+3. *Run 3.* **The same crash at the same address and the same guest stack**: deterministic, and not those two calls.
+   main's symbol table is stripped, so the stack (`0x84c61fd4`, `0x84c5ff00`, `0x8102a074`, `0x84f5b1f8`, ...,
+   from `nnMain` at `0x85bc8f4c`) has no names. Finding which load builds that address, from which value, is the next
+   piece of work; it was not guessed at.
+
+Still answered by the generic stub on the way (0 and nothing written): `nn::ro::ProtectRelro` and `Initialize`,
+`nn::oe::GetPseudoDeviceId`, `nn::hid::InitializeTouchScreen`. One line is Ocarina's and says nothing about Kirby:
+"the depth mode is not the one the prepared shaders were made for" refers to Ocarina's prepared shaders.
+
+### What blocks a Kirby boot now, in order
+
+1. **The job-worker crash above** (guest `0x3feb3100500` read from lifted code under `0x84c61fd4`). Unknown cause.
+   Candidates to rule out first: a value an unanswered or half-answered call left behind (the remaining stubs above,
+   or an NVN proc of SDK 20.5.26 answered by the layer written for 22.2.8 and 21.4.0), and a fiber/TLS assumption
+   (the TLS descriptor's stop did not fire, so it is not that one).
+2. **SDK 20.5.26's names.** 15 of the runtime's handlers name functions this SDK does not have (`nn::os::SystemEvent`
+   constructors, `nn::codec` video decoders, two `nn::audio` calls). Where Kirby calls this SDK's own form of one of
+   them, that call runs the SDK's code, which talks IPC and gets empty answers; each one reached will show as the
+   `sm:` abort run 1 showed.
+3. **The TLS descriptor** in the DLSS library, if the game reaches it (it stops the run and says so).
+4. **The game profile's unknowns**: the graphics module's clock return address and offsets, the upscaler keys, any
+   widescreen or camera patches. None blocks a boot; each is a feature that stays off until found, by the methods in
+   the profile's comments.
+5. **Local play**: 17 `nn::ldn` calls refused (§4), and 47 `nn::socket` and 9 `nn::nifm` ones stubbed, which keeps
+   the game offline.
