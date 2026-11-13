@@ -102,7 +102,7 @@ static void player_used(void) {}
         block(hid, "static void oc_notes("), block(hid, "static uint64_t oc_pad_word("),
         block(hid, "static int flight_jump_shortcut("),
         block(hid, "static void read_input("), block(hid, "static void npad_states("),
-        block(hid, "HLE(_ZN2nn3hid15GetNpadStyleSetERKj)"),
+        block(hid, "HLE(_ZN2nn3hid15GetNpadStyleSetERKj)"), block(hid, "static void npad_state_one("),
         # (the definition, not the forward declaration above npad_states)
         block(hid, "static float rumble_motor("), block(hid, "static float rumble_heavy_share("),
         block(hid, "static void rumble_map("),

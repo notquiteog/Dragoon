@@ -233,6 +233,17 @@ int main(int argc, char **argv) {
         CHECK(connected && !(b & ((1ULL << HOS_SW_PLUS) | (1ULL << HOS_SW_MINUS))));
         /* every read asked for a slot, never for the merged state */
         CHECK(merges > 0);
+        /* (dragoon) GetNpadState, the single-state form Kirby Air Riders reads with, writes what GetNpadStates does */
+        slots[1].buttons = 1ULL << HOS_PAD_SOUTH;
+        read_npad(1, &b, s, &connected);
+        {
+            Ctx context = {{0}};
+            context.x[0] = 256; context.x[1] = 24; context.x[30] = 0x1234;
+            G32(24) = 1;
+            memset(memory + 256, 0xa5, STATE_SIZE);
+            npad_state_one(&context);
+            CHECK(G64(256 + 8) == b && !memcmp(memory + 256 + 16, s, 16) && G32(256 + 32) == ATTR_CONNECTED);
+        }
     } else if (!strcmp(name, "script")) {
         /* P<n> in a script press names the player it is for, and a press without one is P1, as every script written
            before this meant. With no Kirby build this is the only way the per-player path can be driven at all. */
