@@ -173,8 +173,9 @@ extern int hos_guest_memfd;   /* (below) */
 /* (linux) Guest addresses below 1 MB fault, as on Windows (mkw_glue.c commit_on_touch leaves them uncommitted: "a null
    pointer: the game's own fault") and as on the console, where nothing is mapped there. The window is mapped readable and
    writable whole, so before this a game's null-pointer reads and writes went into guest page 0 without a word, and its
-   crash came later and elsewhere, through whatever those writes had left there: Kirby Air Riders' first boot read a
-   "pointer" 0x3feb3100500 out of guest 0x68 in a job worker. Nothing is handed out below HOS_SYSTEM_BASE (16 MB). */
+   crash came later and elsewhere, through whatever had been left there: Kirby Air Riders' first boot (Dragoon) read a
+   "pointer" 0x3feb3100500 out of guest 0x68 in a job worker, where the fault was a null object read at guest 0x58.
+   Nothing is handed out below HOS_SYSTEM_BASE (16 MB). */
 static void guest_null_guard(void) {
     if (mprotect((void *)A64_HOST_BASE, 0x100000, PROT_NONE) != 0)
         hos_log("mem: guest addresses below 1 MB stay accessible (mprotect: errno %d): a null pointer does not fault", errno);
