@@ -544,9 +544,22 @@ Still answered by the generic stub on the way (0 and nothing written): `nn::ro::
 `nn::oe::GetPseudoDeviceId`, `nn::hid::InitializeTouchScreen`. One line is Ocarina's and says nothing about Kirby:
 "the depth mode is not the one the prepared shaders were made for" refers to Ocarina's prepared shaders.
 
+4. *Run 4 and on (null guard).* The read of `0x3feb3100500` was never the fault: on Linux guest page 0 was mapped
+   readable and writable, so a null object's fields read as whatever was there. With guest addresses below 1 MB
+   faulting, as on Windows and the console (`host/hos_main.c guest_null_guard`, Hookshot#20), the boot stops at the
+   real fault, on the same job worker right after the NVN device is made (`nvnDeviceGetInteger` answered the API as
+   231.40, a 1x1 texture made): `f_84c61e80` reads `[x0 + 0x58]` with x0 = 0. Its caller `f_84c5fbe0` passes
+   `[[x1] + 0x9258]`, a manager inside a large context object (the descriptor `x1`'s first word) that nothing has
+   created: `f_84c61e80` locks it and indexes two hash maps and a bitset in it, the shape of a resource-index
+   allocator. The same on one CPU as on twenty, so not a race. No store to `+0x9258` appears in the lifted C as a
+   literal offset (it is written through a computed address); finding it needs a write watch, which the runtime has
+   on Windows only (`HOS_WATCH`).
+
 ### What blocks a Kirby boot now, in order
 
-1. **The job-worker crash above** (guest `0x3feb3100500` read from lifted code under `0x84c61fd4`). Unknown cause.
+1. **The null manager above** (`[ctx + 0x9258]`, read in `f_84c61e80` from `f_84c5fbe0`): which call should have made
+   it, and whether an answer of this runtime's (an NVN query, the 231.40 version, or an earlier stub) is why it did not.
+   Before: the job-worker crash above (guest `0x3feb3100500` read from lifted code under `0x84c61fd4`). Unknown cause.
    Candidates to rule out first: a value an unanswered or half-answered call left behind (the remaining stubs above,
    or an NVN proc of SDK 20.5.26 answered by the layer written for 22.2.8 and 21.4.0), and a fiber/TLS assumption
    (the TLS descriptor's stop did not fire, so it is not that one).
