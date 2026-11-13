@@ -1990,7 +1990,8 @@ def portable_game_home(out):
     home = os.path.abspath(home)
     with open(os.path.join(home, ".hookshot-portable"), "rb") as f:
         marker = f.read(36)
-    magic = b"Dragoon Builder portable home v1"
+    # (a file format the builders write, BuilderHome.cs MarkerText: not the product name, so not renamed)
+    magic = b"Hookshot Builder portable home v1"
     if len(marker) > len(magic) + 2 or marker.rstrip(b"\r\n") != magic:
         raise ValueError("The portable Builder home marker is invalid.")
     if os.path.dirname(home) == home:
