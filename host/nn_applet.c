@@ -1,8 +1,10 @@
 /* nn::oe (applet), nn::account, nn::time, nn::pl, nn::err: what a game asks the system about itself.
    The answers describe a docked console in English (HOS_LANGUAGE / language.txt: another language) with one user,
-   "Player". */
+   "Player", or as many as the game profile or HOS_ACCOUNT_USERS says (nn::account below). */
 #include "hos.h"
+#include "game_profile.h"   /* (dragoon: how many users the console has) */
 #include "hos_paths.h"
+#include "hos_wide_size.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,57 +87,126 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
 }
 /* HOS_HANDHELD=1: handheld (the 1080p screen: 1080p output and the game's handheld resolutions) instead of docked
    (MKW docked composes 3840 x 2160) */
-static int ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp) */
+int hos_ini_option(const char *key, int otherwise);
+#define ini_option hos_ini_option
+/* (hookshot) An option's text in hookshot_options.ini, the game folder's (the Insert menu's choices, gpu/vk/vk_menu.cpp), the last
+   line that sets it, its line end cut: whether there was one */
+static int ini_text(const char *key, char *out, size_t size) {
     char path[MAX_PATH];
     const DWORD n = hos_game_path_a(path, MAX_PATH);
     char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
-    if (!slash) return otherwise;
+    if (!slash || !size) return 0;
     snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
     FILE *f = fopen(path, "r");
-    if (!f) return otherwise;
+    if (!f) return 0;
     char line[80];
     const size_t len = strlen(key);
+    int found = 0;
     while (fgets(line, sizeof line, f))
-        if (!strncmp(line, key, len) && line[len] == '=') otherwise = atoi(line + len + 1);
+        if (!strncmp(line, key, len) && line[len] == '=') {
+            snprintf(out, size, "%s", line + len + 1);
+            out[strcspn(out, "\r\n")] = 0;
+            found = 1;
+        }
     fclose(f);
-    return otherwise;
+    return found;
+}
+int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert menu's choice, gpu/vk/vk_menu.cpp; nn_vi.c reads it too) */
+    char text[80];
+    return ini_text(key, text, sizeof text) ? atoi(text) : otherwise;
 }
 static int handheld(void) {
     static int v = -1;
     if (v < 0) v = getenv("HOS_HANDHELD") ? atoi(getenv("HOS_HANDHELD")) != 0 : ini_option("handheld_profile", 0) != 0;
     return v;
 }
-/* (hookshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: 0 the game's 2048 x 1152,
-   1 2560 x 1440, 2 3840 x 2160. The game's frame is its display size (2560 x 1440 as shipped; nx2/oot_patches.py
-   apply_output_size asks hos_output_size) times its graphics scale (GetCurrentGraphicsScale: 0 x1, 1 x0.8, 2 x0.667). Here it
-   saw scale 1 (x0 left at the call before's answer), so 2048 x 1152; 1 and 2 ask for x1 of a 2560 x 1440 or 3840 x 2160 display. */
-static int output_mode(void) {
-    static int v = -1;
-    if (v < 0) {
-        v = getenv("HOS_OUTPUT_RES") ? atoi(getenv("HOS_OUTPUT_RES")) : ini_option("output_res", 0);
-        if (v < 0 || v > 2 || handheld()) v = 0;
-        hos_log("oe: output resolution %s", v == 2 ? "3840x2160" : v == 1 ? "2560x1440" : "2048x1152 (the game's)");
+/* (hookshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: a size, "<width>x<height>",
+   each side a multiple of 8 (rounded down to one), at least 640 x 360, at most 5120 x 2880's pixels (the largest the render
+   targets' pool, hos_rt_pool_size, was played at) and between 5:4 and 48:9 in shape (host/hos_main.c's screen shapes); anything
+   else is the game's own size, said in the log. The menu offers 2048x1152 and the screen's display modes (gpu/vk/display_modes.h;
+   where they are not known 1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880), and any other size as its own choice. The numbers it saved before are read as their sizes: 0 the game's
+   2048 x 1152, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440, 5 5120 x 2880. The game's frame is its display size
+   (2560 x 1440 as shipped; nx2/oot_patches.py apply_output_size asks hos_output_size) times its graphics scale
+   (GetCurrentGraphicsScale: 0 x1, 1 x0.8, 2 x0.667). Here it saw scale 1 (x0 left at the call before's answer), so 2048 x 1152,
+   the game's own, which 2048x1152 asks for; each other size uses x1. */
+int hos_output_parse(const char *text, uint32_t *w, uint32_t *h) {   /* (an explicit size: 1, and *w x *h; the game's own: 0) */
+    static const uint32_t old[][2] = {{0, 0}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
+    unsigned a = 0, b = 0;
+    *w = *h = 0;
+    if (!text) return 0;
+    if (sscanf(text, "%u%*[xX]%u", &a, &b) == 2) {
+        a &= ~7u, b &= ~7u;
+        if (!hos_output_size_valid(a, b)) {
+            hos_log("oe: output_res=%s is not a size the game can use (640x360 to 5120x2880's pixels, 5:4 to 48:9): the game's own", text);
+            return 0;
+        }
+        if (a == 2048 && b == 1152) return 0;   /* (the game's own) */
+        *w = a, *h = b;
+        return 1;
     }
-    return v;
+    const int i = atoi(text);
+    if (i < 1 || i >= (int)(sizeof old / sizeof *old)) {
+        if (*text && strcmp(text, "0")) hos_log("oe: output_res=%s is not a size or one of the numbers saved before: the game's own", text);
+        return 0;
+    }
+    *w = old[i][0], *h = old[i][1];
+    return 1;
 }
-uint32_t hos_output_size(int height) { return output_mode() == 2 ? (height ? 2160 : 3840) : (height ? 1440 : 2560); }
+static uint32_t output_w, output_h;   /* (the explicit size; 0: the game's own) */
+static int output_mode(void) {   /* (an explicit size: 1; the game's own: 0) */
+    static int read;
+    if (!read) {
+        read = 1;
+        char text[80] = "";
+        const char *e = getenv("HOS_OUTPUT_RES");
+        if (!handheld() && (e || ini_text("output_res", text, sizeof text))) hos_output_parse(e ? e : text, &output_w, &output_h);
+        if (output_w) hos_log("oe: output resolution %ux%u", output_w, output_h);
+        else hos_log("oe: output resolution 2048x1152 (the game's)");
+    }
+    return output_w != 0;
+}
+uint32_t hos_output_size(int height) {
+    if (!output_mode()) return height ? 1440 : 2560;
+    return height ? output_h : output_w;
+}
 /* (hookshot) The render targets' GPU pool (nx2/oot_patches.py), 0x13100000 bytes as shipped, for 2560 x 1440: a 3840x2160 3D at
    the 4K output ran out of it. Scaled with the output's pixels, or the widescreen picture's when it has more (host/hos_main.c:
    hos_wide_out, the output's height at the screen's shape: 7680 x 2160 for a 32:9 screen at the 4K output, twice the pixels the pool
    was scaled for, and the game crashed as Kokiri Forest loaded, a null pointer or "texture handle ids -1", issue 1031);
-   HOS_RT_POOL_MB=<MB> over it */
+   Castle Town's guard-house conversation/camera test crashed with 305 MB at 2560 x 1440 and passed with 512 MB.
+   Keep at least 512 MB by default; larger scaled pools and an explicit HOS_RT_POOL_MB=<MB> still win. An output with more pixels
+   than 3840 x 2160 (a size of the player's own, up to 5120 x 2880's pixels: hos_output_parse) keeps its pool to 900 MB:
+   5120 x 2880 scales to 1220 MB, and 1220 and 1000 MB both failed the game's own reservation at boot; at 900 MB it boots and
+   plays with the 3D at the full size. */
 uint64_t hos_rt_pool_size(uint64_t game) {
     const char *e = getenv("HOS_RT_POOL_MB");
     extern volatile uint64_t hos_wide_out;
     const uint64_t wide = hos_wide_out, wide_px = (wide >> 32) * (wide & 0xffffffffULL);
     uint64_t px = (uint64_t)hos_output_size(0) * hos_output_size(1);
     if (wide_px > px) px = wide_px;
-    const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : px > 2560 * 1440 ? (game * px / (2560 * 1440) + 0xfffff) & ~0xfffffULL : game;
+    const uint64_t scaled = px > 2560 * 1440 ? (game * px / (2560 * 1440) + 0xfffff) & ~0xfffffULL : game;
+    const uint64_t minimum = 512ULL << 20, most = 900ULL << 20;
+    const int big = (uint64_t)hos_output_size(0) * hos_output_size(1) > 3840ULL * 2160;
+    const uint64_t v = e ? strtoull(e, NULL, 0) << 20 : scaled < minimum ? minimum : big && scaled > most ? most : scaled;
     static int logged;
     if (!logged++) hos_log("applet: render target pool %llu MB (the game's %llu MB)", (unsigned long long)(v >> 20), (unsigned long long)(game >> 20));
     return v;
 }
 HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */
+/* (dragoon) GetDefaultDisplayResolution(int* width, int* height): the output this console presents, the one
+   hos_output_size gives the rest of the runtime (the menu's Output resolution, HOS_OUTPUT_RES). Kirby Air Riders asks
+   for it at start; left to the generic import stub, both stayed whatever the stack held and the game went on to size
+   its buffers from them. */
+HLE(_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_) {
+    if (ARG(0)) G32(ARG(0)) = hos_output_size(0);
+    if (ARG(1)) G32(ARG(1)) = hos_output_size(1);
+}
+/* (dragoon) GetDefaultDisplayResolutionChangeEvent(SystemEvent*): an event that is never signalled, because the output
+   never changes while the game runs. Left to the stub, the game's event was never made at all. */
+void hos_system_event_init(uint64_t key, int autoclear);   /* nn_os_sync.c */
+HLE(_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE) {
+    if (ARG(0)) hos_system_event_init(ARG(0), 0);
+}
 HLE(_ZN2nn2oe18GetPerformanceModeEv) { RET(handheld() ? 0 : 1); }   /* PerformanceMode_Normal / _Boost (docked) */
 HLE(_ZN2nn2oe20GetCurrentFocusStateEv) { RET(1); }    /* FocusState_InFocus */
 HLE(_ZN2nn2oe25GetProgramTotalActiveTimeEv) { RET(hos_now_ns() - boot_ns); }
@@ -156,32 +227,166 @@ HLE(_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb) {}
 HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
 HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
 
-/* ---- nn::account: one user ------------------------------------------------------------------------------------ */
-static const uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};
+/* ---- nn::account: the users ----------------------------------------------------------------------------------
+   (dragoon) One user, "Player", unless the game profile or HOS_ACCOUNT_USERS says more: HOS_ACCOUNT_USERS=<1..8>, unset
+   the profile's count (game_profile.h: Ocarina's 1, Kirby Air Riders' 4, a user for each of its four players). User 1 is
+   the one there always was, uid and all, so its save folder (<user>/save/<uid>: nn_fs.c) is the same one; users 2 and up
+   are "Player 2" and on, each with a uid and so a save folder of its own.
+
+   A UserHandle is three words: the uid, and a word this runtime keeps 1 in for an open handle. Which users are open
+   is counted here, because that is what the user selector answers by: the console's selector is an applet that shows
+   the accounts and lets a player pick one; there is no picker here, so ShowUserSelector hands out the first user not
+   open yet, which is what a game that opens one user per player in turn gets from players who each pick their own.
+   Its settings (UserSelectionSettings) are not read: their layout is the SDK's and is not known here, so what the game
+   asked for is logged instead (its first bytes), and the first real run says what it holds. With every user open it
+   answers a failure, not a user: the console's "cancelled" Result is not known here and is not invented, and the one
+   property the answer needs is that it is not success. */
+#define ACCOUNT_USERS_MAX 8
+#define ACCOUNT_FAILURE 0x7C7C   /* (an account error, as the network service's below: module 124, not success) */
+static const uint64_t user_uid[2] = {0x0000000000000001ULL, 0x5a3c9e1f0b7d2468ULL};   /* (user 1's, as always) */
+static volatile LONG account_open[ACCOUNT_USERS_MAX];   /* (each user's open handles) */
+static int account_pushed[ACCOUNT_USERS_MAX], account_npushed;
+
+static int account_users(void) {
+    static int n;
+    if (!n) {
+        const char *e = getenv("HOS_ACCOUNT_USERS");
+        int v = e && *e ? atoi(e) : GAME_ACCOUNT_USERS;
+        v = v < 1 ? 1 : v > ACCOUNT_USERS_MAX ? ACCOUNT_USERS_MAX : v;
+        if (v > 1) hos_log("account: %d users (%s)", v, e && *e ? "HOS_ACCOUNT_USERS" : "the game profile");
+        n = v;
+    }
+    return n;
+}
+/* a user's uid: user 0 is user_uid itself, user i its first word plus i */
+static void account_uid(int user, uint64_t uid[2]) {
+    uid[0] = user_uid[0] + (uint64_t)user;
+    uid[1] = user_uid[1];
+}
+/* which user a uid is, or -1 for one that is not a user here */
+static int account_user_of(uint64_t lo, uint64_t hi) {
+    if (hi != user_uid[1] || lo < user_uid[0]) return -1;
+    const uint64_t i = lo - user_uid[0];
+    return i < (uint64_t)account_users() ? (int)i : -1;
+}
+static void account_put_handle(uint64_t at, int user) {
+    uint64_t uid[2];
+    account_uid(user, uid);
+    G64(at) = uid[0];
+    G64(at + 8) = uid[1];
+    G64(at + 16) = 1;
+    InterlockedIncrement(&account_open[user]);
+}
+
 HLE(_ZN2nn7account10InitializeEv) {}
-/* TryOpenPreselectedUser(UserHandle*) -> bool. A handle is three words; ours carries the uid. */
+/* TryOpenPreselectedUser(UserHandle*) -> bool: the first user, the one the console started the game as */
 HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
-    G64(ARG(0)) = user_uid[0];
-    G64(ARG(0) + 8) = user_uid[1];
-    G64(ARG(0) + 16) = 1;
+    account_put_handle(ARG(0), 0);
     RET(1);
 }
-HLE(_ZN2nn7account9CloseUserERKNS0_10UserHandleE) {}
-/* GetUserId(Uid*, UserHandle const&) -> Result */
-HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
-    G64(ARG(0)) = user_uid[0];
-    G64(ARG(0) + 8) = user_uid[1];
+/* OpenUser(UserHandle*, Uid const&) -> Result */
+HLE(_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE) {
+    const int user = account_user_of(G64(ARG(1)), G64(ARG(1) + 8));
+    if (user < 0) {
+        hos_log("account: OpenUser of uid %016llx%016llx, not a user here (lr %#llx)", (unsigned long long)G64(ARG(1) + 8),
+                (unsigned long long)G64(ARG(1)), (unsigned long long)c->x[30]);
+        RET(ACCOUNT_FAILURE);
+        return;
+    }
+    account_put_handle(ARG(0), user);
     RET(0);
 }
-/* GetNickname(Nickname*, Uid const&) -> Result: Nickname is char[33] */
+HLE(_ZN2nn7account9CloseUserERKNS0_10UserHandleE) {
+    const int user = account_user_of(G64(ARG(0)), G64(ARG(0) + 8));
+    if (user >= 0 && account_open[user] > 0) InterlockedDecrement(&account_open[user]);
+}
+/* GetUserId(Uid*, UserHandle const&) -> Result: the handle's own uid */
+HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
+    G64(ARG(0)) = G64(ARG(1));
+    G64(ARG(0) + 8) = G64(ARG(1) + 8);
+    RET(0);
+}
+/* GetNickname(Nickname*, Uid const&) -> Result: Nickname is char[33]. "Player", then "Player 2" and on */
 HLE(_ZN2nn7account11GetNicknameEPNS0_8NicknameERKNS0_3UidE) {
+    const int user = account_user_of(G64(ARG(1)), G64(ARG(1) + 8));
     memset(GP(ARG(0)), 0, 33);
-    memcpy(GP(ARG(0)), "Player", 6);
+    if (user > 0) snprintf((char *)GP(ARG(0)), 33, "Player %d", user + 1);
+    else memcpy(GP(ARG(0)), "Player", 6);
     RET(0);
 }
 HLE(_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE) {
-    *(uint8_t *)GP(ARG(0)) = G64(ARG(1)) == user_uid[0] && G64(ARG(1) + 8) == user_uid[1];
+    *(uint8_t *)GP(ARG(0)) = account_user_of(G64(ARG(1)), G64(ARG(1) + 8)) >= 0;
     RET(0);
+}
+/* GetUserCount(int*) -> Result */
+HLE(_ZN2nn7account12GetUserCountEPi) {
+    G32(ARG(0)) = (uint32_t)account_users();
+    RET(0);
+}
+/* (mkw-recomp) ListAllUsers(int* count, Uid* out, int max) -> Result */
+HLE(_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi) {
+    int n = account_users();
+    if ((int)ARG(2) < n) n = (int)ARG(2) > 0 ? (int)ARG(2) : 0;
+    for (int i = 0; ARG(1) && i < n; i++) {
+        uint64_t uid[2];
+        account_uid(i, uid);
+        G64(ARG(1) + 16 * (uint64_t)i) = uid[0];
+        G64(ARG(1) + 16 * (uint64_t)i + 8) = uid[1];
+    }
+    if (ARG(0)) G32(ARG(0)) = (uint32_t)n;
+    RET(0);
+}
+/* ShowUserSelector(Uid*, UserSelectionSettings const&) -> Result: the first user not open (see above) */
+HLE(_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE) {
+    static int logged;
+    if (logged++ < 8) {
+        const uint8_t *b = (const uint8_t *)GP(ARG(1));
+        char hex[3 * 32 + 1] = "";
+        for (int i = 0; i < 32; i++) snprintf(hex + 3 * i, 4, " %02x", b[i]);
+        hos_log("account: ShowUserSelector (lr %#llx), settings%s ...", (unsigned long long)c->x[30], hex);
+    }
+    for (int user = 0; user < account_users(); user++)
+        if (!account_open[user]) {
+            uint64_t uid[2];
+            account_uid(user, uid);
+            G64(ARG(0)) = uid[0];
+            G64(ARG(0) + 8) = uid[1];
+            hos_log("account: ShowUserSelector chose user %d (no user picker here)", user + 1);
+            RET(0);
+            return;
+        }
+    hos_log("account: ShowUserSelector with every one of the %d users open: answered a failure, as if cancelled",
+            account_users());
+    RET(ACCOUNT_FAILURE);
+}
+/* PushOpenUsers(): the open users, kept for PopOpenUsers. PopOpenUsers(int* count, UserHandle* out, int max) -> Result:
+   them, opened again, then none. A game started fresh has none pushed, as on the console */
+HLE(_ZN2nn7account13PushOpenUsersEv) {
+    account_npushed = 0;
+    for (int user = 0; user < account_users(); user++)
+        if (account_open[user]) account_pushed[account_npushed++] = user;
+    hos_log("account: PushOpenUsers: %d", account_npushed);
+}
+HLE(_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi) {
+    int n = account_npushed < (int)ARG(2) ? account_npushed : (int)ARG(2) > 0 ? (int)ARG(2) : 0;
+    for (int i = 0; i < n; i++) account_put_handle(ARG(1) + 24 * (uint64_t)i, account_pushed[i]);
+    G32(ARG(0)) = (uint32_t)n;
+    account_npushed = 0;
+    RET(0);
+}
+/* LoadProfileImage(size_t* size, void* out, size_t max, Uid const&) -> Result: there is no profile image here, and a
+   made-up picture is not given: a failure, with no size */
+HLE(_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE) {
+    static int logged;
+    if (!logged++) hos_log("account: LoadProfileImage: no profile images here, answered a failure (lr %#llx)",
+                           (unsigned long long)c->x[30]);
+    if (ARG(0)) G64(ARG(0)) = 0;
+    RET(ACCOUNT_FAILURE);
+}
+/* LoadNetworkServiceAccountIdTokenCache(size_t*, char*, size_t, UserHandle const&) -> Result: offline, no token */
+HLE(_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE) {
+    if (ARG(0)) G64(ARG(0)) = 0;
+    RET(ACCOUNT_FAILURE);
 }
 
 /* ---- nn::time: the host clock --------------------------------------------------------------------------------- */
@@ -236,7 +441,7 @@ HLE(_ZN2nn3nsd24GetEnvironmentIdentifierEPNS0_21EnvironmentIdentifierE) {
 
 static void calendar(uint64_t out, uint64_t info, int64_t posix, int local) {
     time_t t = (time_t)posix;
-    struct tm tmv;
+    struct tm tmv = {0};   /* (hookshot: a time the C library cannot convert left it as the stack had it) */
     if (local) localtime_s(&tmv, &t); else gmtime_s(&tmv, &t);
     /* CalendarTime { s16 year; s8 month, day, hour, minute, second; pad } */
     uint8_t ct[8] = {0};
@@ -324,23 +529,6 @@ HLE(_ZN2nn5prepo12AsyncContext9GetResultEv) { RET(0); }
 HLE(_ZN2nn5prepo12AsyncContextD1Ev) {}
 
 /* ---- (mkw-recomp) MKW's account and oe calls TOTK never made: the one user, offline ------------------------- */
-/* ListAllUsers(int* count, Uid* out, int max) -> Result */
-HLE(_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi) {
-    const int n = (int)ARG(2) > 0 ? 1 : 0;
-    if (n && ARG(1)) {
-        G64(ARG(1)) = user_uid[0];
-        G64(ARG(1) + 8) = user_uid[1];
-    }
-    if (ARG(0)) G32(ARG(0)) = (uint32_t)n;
-    RET(0);
-}
-/* OpenUser(UserHandle*, Uid const&) -> Result */
-HLE(_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE) {
-    G64(ARG(0)) = G64(ARG(1));
-    G64(ARG(0) + 8) = G64(ARG(1) + 8);
-    G64(ARG(0) + 16) = 0;
-    RET(0);
-}
 /* the network service account: not available (the game stays offline) */
 HLE(_ZN2nn7account32IsNetworkServiceAccountAvailableEPbRKNS0_10UserHandleE) {
     *(uint8_t *)GP(ARG(0)) = 0;
