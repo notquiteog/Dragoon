@@ -282,6 +282,12 @@ NV(nvnMemoryPoolInitialize) {
     o->magic = NVN_MAGIC('P', 'O', 'O', 'L');
     o->flags = b->flags;
     o->size = b->size;
+    {   /* HOS_NVN_LOG_POOLS=1: each pool initialized, by its object's guest address, with who asked */
+        static int on = -1;
+        if (on < 0) on = getenv("HOS_NVN_LOG_POOLS") && atoi(getenv("HOS_NVN_LOG_POOLS")) != 0;
+        if (on) hos_log("nvn: pool object %#llx: storage %#llx size %#llx flags %#x (lr %#llx)", (unsigned long long)c->x[0],
+                        (unsigned long long)b->mem, (unsigned long long)o->size, o->flags, (unsigned long long)c->x[30]);
+    }
     if (o->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) {
         if (b->mem || !o->size || o->size % VPAGE) die("virtual pool storage %#llx size %#llx", (unsigned long long)b->mem,
                                                        (unsigned long long)o->size);
@@ -462,7 +468,17 @@ NV(nvnBufferInitialize) {
     const nvn_buffer_builder *b = (const nvn_buffer_builder *)P(1);
     const nvn_pool *bp = POOL(b->pool);
     if (!bp || bp->magic != NVN_MAGIC('P', 'O', 'O', 'L') || b->off < 0 || (uint64_t)b->off > bp->size ||
-        b->size > bp->size - (uint64_t)b->off) { RET(0); return; }
+        b->size > bp->size - (uint64_t)b->off) {
+        /* (a refusal the game may take as fatal, or work around without a word: which one and why, a few times) */
+        static volatile LONG told;
+        if (InterlockedIncrement(&told) <= 8)
+            hos_log("nvn: buffer refused (lr %#llx): pool %#llx %s, offset %#llx size %#llx, pool size %#llx",
+                    (unsigned long long)c->x[30], (unsigned long long)c->x[1] ? (unsigned long long)(uintptr_t)b->pool : 0ULL,
+                    !bp ? "none" : bp->magic != NVN_MAGIC('P', 'O', 'O', 'L') ? "not a pool (never initialized?)" : "valid",
+                    (unsigned long long)b->off, (unsigned long long)b->size, bp ? (unsigned long long)bp->size : 0ULL);
+        RET(0);
+        return;
+    }
     nvn_buffer *o = (nvn_buffer *)P(0);
     o->magic = NVN_MAGIC('B', 'U', 'F', 0);
     o->pool = b->pool;

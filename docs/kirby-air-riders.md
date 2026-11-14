@@ -576,6 +576,30 @@ Still answered by the generic stub on the way (0 and nothing written): `nn::ro::
      `f_84c6d140` (does the job ever run, and when) and the job system's wait at the reader's side (`0x8102a04c`
      `f_84c60dc0`, 104 callers: the context's lock or reservation).
 
+6. *Runs 11 to 17 (2026-11-14, on Hookshot main's seam: the `kar` profile chosen by build id).* Log lines at the
+   entry of each function, then at every block and call return of the builder (added to the lifted C by hand, in
+   `work/`, for these runs only), follow the manager's creation to where it stops:
+   - The job **does run**, on a PhysX worker: the job system's setup `f_84c699e0` makes the job (`f_84c6cf90`), the
+     job (`f_84c6d140`) calls the builder `f_84c446a0` with the context. The builder boots NVN (loads its procs, the
+     device is made while it runs), then calls `f_84c46620(ctx + 0x92b8, ctx, 0)`, which fails, and **the builder
+     returns early with a failure**, before `str x22, [x28, #0x100]`: the manager is never stored. Another fiber,
+     on another worker, then reads it (the reader does not wait for the builder: `f_84c60dc0` only takes a descriptor
+     from a pool).
+   - `f_84c46620` fails because `f_84c467d0` returns 0, because `f_84c48e14` fails: it makes a buffer (the game's
+     NVN procs, resolved from `nvnLoadCProcs`' table: `nvnBufferBuilderSetDefaults`, `SetDevice`, `SetStorage`, then
+     `nvnBufferInitialize`) of 64 MB at offset 0 in a memory pool, and **`nvnBufferInitialize` refuses**: the pool,
+     the object at guest `0x12ffef8`, was never initialized (no pool magic, size 0). `HOS_NVN_LOG_POOLS=1` shows that
+     **no memory pool at all** had been initialized by then. The same address was in run 8's crash dump, at `[x1 +
+     0x68]` of the reader's descriptor.
+   - So the game takes the pool from a table of pool wrappers (resolved by handle in `f_84c48e14`, from the object
+     at `[ctx + 0x9670]`, whose validity the flag at `ctx + 0x926b` gives: `0x8102a018` reads that flag and passes
+     null when it is 0) that should already hold an initialized pool. Next: where that pool should have been made
+     (a call before this one that the runtime answers so that the game skips making it, or a pool the game expects
+     from an SDK/NVN query), starting from the flag at `ctx + 0x926b` and the object at `ctx + 0x9670`.
+   - Runtime diagnostics added on the way (host/nvn_native.c, every fork can use them): `nvnBufferInitialize` logs
+     its first refusals and why; `HOS_NVN_LOG_POOLS=1` logs each memory pool initialized, by its object's guest
+     address and caller.
+
 ### What blocks a Kirby boot now, in order
 
 1. **The null manager above** (`[ctx + 0x9258]`, read in `f_84c61e80` from `f_84c5fbe0`): which call should have made
