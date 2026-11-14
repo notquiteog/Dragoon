@@ -555,6 +555,27 @@ Still answered by the generic stub on the way (0 and nothing written): `nn::ro::
    literal offset (it is written through a computed address); finding it needs a write watch, which the runtime has
    on Windows only (`HOS_WATCH`).
 
+5. *Runs 9 and 10 (write watch, 2026-11-13).* The crash registers name the object: `x22 = 0x89397988`, `x23 =
+   0x893a0be0 = x22 + 0x9258`. The context is a **function-local static in main's data** (guarded init at
+   `0x80f14694`: `__cxa_guard_acquire`, constructor `f_84c41f18`, `__cxa_atexit`), so its address is the same every run.
+   Linux's `HOS_WATCH` (host/posix/prof.c, perf hardware breakpoints) on `0x893a0be0` and on `ctx + 0x91f8` (the
+   pointer the constructor keeps to the block holding the field) found, before the crash, exactly three accesses:
+   the constructor writing both (zero: `stp xzr, xzr, [ctx + 0x9250]`), then the faulting read in `f_84c5fbe0`. Nothing
+   else wrote the field. (The watch only wrote its results 8 s in, after the crash; it now also logs each new place
+   the moment it is hit, and `HOS_WATCH_EVERY_MS=50` arms threads started since every 50 ms.)
+   - **What should have made the manager:** `f_84c446a0` builds it (the bitset `+0xf0..+0x128` zeroed) and stores
+     it with `str x22, [x28, #0x100]` (`x28 = ctx + 0x9158`), destroying the
+     one before with its destructor `f_84c617a0`. Its only caller is `f_84c6f198`, called only from `f_84c6d140`, which
+     no code calls directly: its address is taken with `adr` at `0x84c6d02c` and stored as a callback (`+0x58`, with a
+     second one, `0x84c6d380`, at `+0x68`) in a 0x80-byte job object made by `f_84c6cf90`. That maker is itself a
+     callback, `adr` at `0x84c6a4e0` in a large setup routine that fills a table of such jobs.
+   - So the manager is made by **an asynchronous job of the game's own job system**, and a PhysX job worker used the
+     context before that job ran (or the job never runs). On the console the reader must wait for it; what makes it
+     wait here is the next question: a dependency the job system expresses through an `nn::os` primitive, a fiber
+     switch, or an atomic wait this runtime answers early would all look like this. Next: an execute watch on
+     `f_84c6d140` (does the job ever run, and when) and the job system's wait at the reader's side (`0x8102a04c`
+     `f_84c60dc0`, 104 callers: the context's lock or reservation).
+
 ### What blocks a Kirby boot now, in order
 
 1. **The null manager above** (`[ctx + 0x9258]`, read in `f_84c61e80` from `f_84c5fbe0`): which call should have made

@@ -384,8 +384,12 @@ static DWORD WINAPI sample_all_thread(void *p) {
 
 /* HOS_WATCH=<file> (diagnostic): when <file> exists (up to 4 guest addresses in hex), data breakpoints on them on every
    guest thread: 4 s on reads and writes, then 4 s on writes; <file>.out gets, by address and the host place of the
-   access, how many; then <file> is renamed <file>.done and the next one may come. */
+   access, how many; then <file> is renamed <file>.done and the next one may come. Each place is also logged the first
+   time it is seen ("watch: <addr> rw|w at hookshot+<offset>"), so a run that crashes inside the 8 s still says who
+   touched it. HOS_WATCH_EVERY_MS (default 1000): how often threads started since are given the breakpoints too, for a
+   thread that starts and writes within a second (a game's job workers at boot). */
 static uint64_t watch_keys[8192];
+static uintptr_t watch_exe;   /* (the executable's base, for the log line: taken before any breakpoint is set) */
 static volatile LONG watch_counts[8192];
 static volatile LONG watch_phase;
 static struct sigaction watch_prev;
@@ -405,8 +409,17 @@ static void on_watch(int sig, siginfo_t *si, void *uctx) {
         uint64_t k = __atomic_load_n(&watch_keys[i], __ATOMIC_RELAXED);
         if (!k) {
             uint64_t expect = 0;
-            if (__atomic_compare_exchange_n(&watch_keys[i], &expect, key, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) k = key;
-            else k = expect;
+            if (__atomic_compare_exchange_n(&watch_keys[i], &expect, key, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+                k = key;
+                char line[160];   /* (snprintf of integers and write: no allocation, no lock) */
+                const int n = rip >= watch_exe && rip - watch_exe < (1ULL << 32)
+                                  ? snprintf(line, sizeof line, "watch: #%lu %s at hookshot+%llx (tid %ld)\n", idx,
+                                             watch_phase & 1 ? "w" : "rw", (unsigned long long)(rip - watch_exe),
+                                             (long)syscall(SYS_gettid))
+                                  : snprintf(line, sizeof line, "watch: #%lu %s at %#llx (tid %ld)\n", idx,
+                                             watch_phase & 1 ? "w" : "rw", (unsigned long long)rip, (long)syscall(SYS_gettid));
+                if (n > 0) { ssize_t w = write(2, line, (size_t)n); (void)w; }
+            } else k = expect;
         }
         if (k == key) { InterlockedIncrement(&watch_counts[i]); break; }
     }
@@ -448,6 +461,9 @@ static void watch_arm(const uint64_t *addr, int n, int rw) {
 }
 static DWORD WINAPI watch_thread(void *p) {
     const char *path = (const char *)p;
+    watch_exe = exe_base();
+    const char *every_ms = getenv("HOS_WATCH_EVERY_MS");
+    const int every = every_ms && atoi(every_ms) > 0 ? atoi(every_ms) : 1000, rounds = (4000 + every - 1) / every;
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_watch;
@@ -470,9 +486,9 @@ static DWORD WINAPI watch_thread(void *p) {
         for (int k = 0; k < n; k++) hos_log("watch: %llx holds %08x", (unsigned long long)addr[k], *(uint32_t *)GP(addr[k]));
         for (int ph = 0; ph < 2; ph++) {
             watch_phase = ph;
-            for (int t = 0; t < 4; t++) {   /* (threads that started since) */
+            for (int t = 0; t < rounds; t++) {   /* (threads that started since) */
                 watch_arm(addr, n, ph ? 1 : 3);
-                Sleep(1000);
+                Sleep((DWORD)every);
             }
         }
         watch_arm(addr, 0, 0);
