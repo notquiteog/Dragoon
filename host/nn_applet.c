@@ -2,7 +2,7 @@
    The answers describe a docked console in English (HOS_LANGUAGE / language.txt: another language) with one user,
    "Player", or as many as the game profile or HOS_ACCOUNT_USERS says (nn::account below). */
 #include "hos.h"
-#include "game_profile.h"   /* (dragoon: how many users the console has) */
+#include "game_profile.h"   /* (how many users the console has) */
 #include "hos_paths.h"
 #include "hos_wide_size.h"
 #include <stdio.h>
@@ -193,16 +193,23 @@ uint64_t hos_rt_pool_size(uint64_t game) {
     return v;
 }
 HLE(_ZN2nn2oe16GetOperationModeEv) { RET(handheld() ? 0 : 1); }     /* OperationMode_Handheld / _Console (docked) */
-/* (dragoon) GetDefaultDisplayResolution(int* width, int* height): the output this console presents, the one
-   hos_output_size gives the rest of the runtime (the menu's Output resolution, HOS_OUTPUT_RES). Kirby Air Riders asks
-   for it at start; left to the generic import stub, both stayed whatever the stack held and the game went on to size
-   its buffers from them. */
+/* GetDefaultDisplayResolution(int* width, int* height): what a Switch 2 answers: 1920 x 1080 in handheld mode (its
+   screen), 3840 x 2160 docked (the dock's output to a 4K TV, which is what HOS_HANDHELD=0, the runtime's default, plays
+   as; on a 1080p TV the console says 1920 x 1080). It is the console's output, not this runtime's: the picture's
+   size here is hos_output_size's and the game's own render targets, which this answer does not change. Kirby Air
+   Riders asks at start (found in Dragoon, its fork); left to the SDK's own code, which asks the applet service this
+   runtime does not serve over IPC, both stayed whatever the stack held. Ocarina's SDK has the call too; the log says
+   whether it asks. */
 HLE(_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_) {
-    if (ARG(0)) G32(ARG(0)) = hos_output_size(0);
-    if (ARG(1)) G32(ARG(1)) = hos_output_size(1);
+    const uint32_t w = handheld() ? 1920 : 3840, h = handheld() ? 1080 : 2160;
+    static int logged;
+    if (!logged++) hos_log("oe: default display resolution %ux%u (%s; lr %#llx)", w, h, handheld() ? "handheld" : "docked",
+                           (unsigned long long)c->x[30]);
+    if (ARG(0) && hos_guest_range(ARG(0), 4)) G32(ARG(0)) = w;
+    if (ARG(1) && hos_guest_range(ARG(1), 4)) G32(ARG(1)) = h;
 }
-/* (dragoon) GetDefaultDisplayResolutionChangeEvent(SystemEvent*): an event that is never signalled, because the output
-   never changes while the game runs. Left to the stub, the game's event was never made at all. */
+/* GetDefaultDisplayResolutionChangeEvent(SystemEvent*): an event that is never signalled, because the output never
+   changes while the game runs. Left to the stub, the game's event was never made at all. */
 void hos_system_event_init(uint64_t key, int autoclear);   /* nn_os_sync.c */
 HLE(_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE) {
     if (ARG(0)) hos_system_event_init(ARG(0), 0);
@@ -228,13 +235,13 @@ HLE(_ZN2nn2oe25TryPopNotificationMessageEPj) { RET(0); }
 HLE(_ZN2nn2oe22PopNotificationMessageEv) { for (;;) hos_sleep_ns(1000000000LL); }
 
 /* ---- nn::account: the users ----------------------------------------------------------------------------------
-   (dragoon) One user, "Player", unless the game profile or HOS_ACCOUNT_USERS says more: HOS_ACCOUNT_USERS=<1..8>, unset
-   the profile's count (game_profile.h: Ocarina's 1, Kirby Air Riders' 4, a user for each of its four players). User 1 is
+   One user, "Player", unless the game profile or HOS_ACCOUNT_USERS says more: HOS_ACCOUNT_USERS=<1..8>, unset the
+   profile's count (game_profile.h: Ocarina's 1; Dragoon's Kirby Air Riders profile says 4, a user per player). User 1 is
    the one there always was, uid and all, so its save folder (<user>/save/<uid>: nn_fs.c) is the same one; users 2 and up
    are "Player 2" and on, each with a uid and so a save folder of its own.
 
-   A UserHandle is three words: the uid, and a word this runtime keeps 1 in for an open handle. Which users are open
-   is counted here, because that is what the user selector answers by: the console's selector is an applet that shows
+   A UserHandle is three words: the uid, and a third word, 1 from TryOpenPreselectedUser and 0 from OpenUser, as this
+   runtime always wrote them (Ocarina opens its user both ways). Which users are open is counted here, because that is what the user selector answers by: the console's selector is an applet that shows
    the accounts and lets a player pick one; there is no picker here, so ShowUserSelector hands out the first user not
    open yet, which is what a game that opens one user per player in turn gets from players who each pick their own.
    Its settings (UserSelectionSettings) are not read: their layout is the SDK's and is not known here, so what the game
@@ -269,41 +276,47 @@ static int account_user_of(uint64_t lo, uint64_t hi) {
     const uint64_t i = lo - user_uid[0];
     return i < (uint64_t)account_users() ? (int)i : -1;
 }
-static void account_put_handle(uint64_t at, int user) {
+static void account_put_handle(uint64_t at, int user, uint64_t third) {
     uint64_t uid[2];
     account_uid(user, uid);
     G64(at) = uid[0];
     G64(at + 8) = uid[1];
-    G64(at + 16) = 1;
+    G64(at + 16) = third;
     InterlockedIncrement(&account_open[user]);
 }
 
 HLE(_ZN2nn7account10InitializeEv) {}
 /* TryOpenPreselectedUser(UserHandle*) -> bool: the first user, the one the console started the game as */
 HLE(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE) {
-    account_put_handle(ARG(0), 0);
+    account_put_handle(ARG(0), 0, 1);
     RET(1);
 }
-/* OpenUser(UserHandle*, Uid const&) -> Result */
+/* OpenUser(UserHandle*, Uid const&) -> Result: a handle of that uid, success, as this runtime always answered (Ocarina
+   opens its user so). A uid that is not a user here is opened all the same, and logged: what the console answers for
+   one is not known here, and Ocarina's answer stays the one it had. */
 HLE(_ZN2nn7account8OpenUserEPNS0_10UserHandleERKNS0_3UidE) {
     const int user = account_user_of(G64(ARG(1)), G64(ARG(1) + 8));
     if (user < 0) {
-        hos_log("account: OpenUser of uid %016llx%016llx, not a user here (lr %#llx)", (unsigned long long)G64(ARG(1) + 8),
-                (unsigned long long)G64(ARG(1)), (unsigned long long)c->x[30]);
-        RET(ACCOUNT_FAILURE);
-        return;
-    }
-    account_put_handle(ARG(0), user);
+        hos_log("account: OpenUser of uid %016llx%016llx, not a user here: opened all the same (lr %#llx)",
+                (unsigned long long)G64(ARG(1) + 8), (unsigned long long)G64(ARG(1)), (unsigned long long)c->x[30]);
+        G64(ARG(0)) = G64(ARG(1));
+        G64(ARG(0) + 8) = G64(ARG(1) + 8);
+        G64(ARG(0) + 16) = 0;
+    } else account_put_handle(ARG(0), user, 0);
     RET(0);
 }
 HLE(_ZN2nn7account9CloseUserERKNS0_10UserHandleE) {
     const int user = account_user_of(G64(ARG(0)), G64(ARG(0) + 8));
     if (user >= 0 && account_open[user] > 0) InterlockedDecrement(&account_open[user]);
 }
-/* GetUserId(Uid*, UserHandle const&) -> Result: the handle's own uid */
+/* GetUserId(Uid*, UserHandle const&) -> Result: the handle's own uid; for a handle that names no user here, user 1's, as
+   this runtime always answered every handle */
 HLE(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE) {
-    G64(ARG(0)) = G64(ARG(1));
-    G64(ARG(0) + 8) = G64(ARG(1) + 8);
+    const int user = account_user_of(G64(ARG(1)), G64(ARG(1) + 8));
+    uint64_t uid[2];
+    account_uid(user < 0 ? 0 : user, uid);
+    G64(ARG(0)) = uid[0];
+    G64(ARG(0) + 8) = uid[1];
     RET(0);
 }
 /* GetNickname(Nickname*, Uid const&) -> Result: Nickname is char[33]. "Player", then "Player 2" and on */
@@ -339,10 +352,16 @@ HLE(_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi) {
 /* ShowUserSelector(Uid*, UserSelectionSettings const&) -> Result: the first user not open (see above) */
 HLE(_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE) {
     static int logged;
+    if (!ARG(0)) {
+        RET(ACCOUNT_FAILURE);
+        return;
+    }
     if (logged++ < 8) {
-        const uint8_t *b = (const uint8_t *)GP(ARG(1));
-        char hex[3 * 32 + 1] = "";
-        for (int i = 0; i < 32; i++) snprintf(hex + 3 * i, 4, " %02x", b[i]);
+        char hex[3 * 32 + 1] = " none";   /* (no settings given: the console's defaults) */
+        if (ARG(1)) {
+            const uint8_t *b = (const uint8_t *)GP(ARG(1));
+            for (int i = 0; i < 32; i++) snprintf(hex + 3 * i, 4, " %02x", b[i]);
+        }
         hos_log("account: ShowUserSelector (lr %#llx), settings%s ...", (unsigned long long)c->x[30], hex);
     }
     for (int user = 0; user < account_users(); user++)
@@ -369,8 +388,9 @@ HLE(_ZN2nn7account13PushOpenUsersEv) {
 }
 HLE(_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi) {
     int n = account_npushed < (int)ARG(2) ? account_npushed : (int)ARG(2) > 0 ? (int)ARG(2) : 0;
-    for (int i = 0; i < n; i++) account_put_handle(ARG(1) + 24 * (uint64_t)i, account_pushed[i]);
-    G32(ARG(0)) = (uint32_t)n;
+    if (!ARG(1)) n = 0;
+    for (int i = 0; i < n; i++) account_put_handle(ARG(1) + 24 * (uint64_t)i, account_pushed[i], 1);
+    if (ARG(0)) G32(ARG(0)) = (uint32_t)n;
     account_npushed = 0;
     RET(0);
 }
@@ -383,10 +403,47 @@ HLE(_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE) {
     if (ARG(0)) G64(ARG(0)) = 0;
     RET(ACCOUNT_FAILURE);
 }
-/* LoadNetworkServiceAccountIdTokenCache(size_t*, char*, size_t, UserHandle const&) -> Result: offline, no token */
-HLE(_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE) {
-    if (ARG(0)) G64(ARG(0)) = 0;
-    RET(ACCOUNT_FAILURE);
+/* (dkb) GetLastOpenedUser(Uid*) -> Result: the one user, the only one ever opened. Donkey Kong Bananza asks for it
+   after TryOpenPreselectedUser; the generic stub left the Uid zero, which names no user. (dkb-pc-recomp's
+   runtime/ov_system.c ov_last_opened_user found that the game asks: behaviour only, the code is this file's.) */
+HLE(_ZN2nn7account17GetLastOpenedUserEPNS0_3UidE) {
+    G64(ARG(0)) = user_uid[0];
+    G64(ARG(0) + 8) = user_uid[1];
+    RET(0);
+}
+/* (dkb) LoadCachedNintendoAccountInfo(CachedNintendoAccountInfo*, UserHandle const&, void*, size_t) -> Result: no
+   Nintendo Account is linked here, so a failure; the generic stub's 0 said the outputs were filled, and nothing was.
+   The result is the account service's on a console, not the SDK's, and no console's answer for an unlinked user was
+   measured here. 0x1907c is account module 124, description 200. It is dkb-pc-recomp's choice for Donkey Kong
+   Bananza 3.2.0 (ACCOUNT_R_REGISTRATION_REQUIRED), and the game's own code agrees with it: its one call (main
+   0x8048f460 on 3.2.0) takes the offline path on any failure, and tests account results with descriptions 200 to 269
+   as a family of their own; 200 is the first of them. (The 280 this file answers for the network service account
+   token is outside that family, and means a different thing.) The outputs are left alone, as on any failure. */
+HLE(_ZN2nn7account29LoadCachedNintendoAccountInfoEPNS0_25CachedNintendoAccountInfoERKNS0_10UserHandleEPvm) {
+    RET(0x1907C);
+}
+
+/* ---- (dkb) services a console has and this PC does not ------------------------------------------------------------
+   Each answers "not here", so the game takes its offline path, where the generic stub's 0 (success with empty
+   outputs) or the lifted SDK's IPC (a session whose replies are empty) said the thing was there. Found on Donkey Kong
+   Bananza 3.2.0; dkb-pc-recomp (github.com/Lucas-blip-png/dkb-pc-recomp, runtime/ov_system.c) reached the same
+   answers by running the game. Each comment says where its value comes from. */
+/* nn::bcat::MountDeliveryCacheStorage() -> Result: no delivery cache is installed: 0x47a, bcat module 122, description
+   2 (FailedOpenEntity), dkb-pc-recomp's answer; a console with no cache downloaded yet was not measured here */
+HLE(_ZN2nn4bcat25MountDeliveryCacheStorageEv) {
+    static volatile LONG told;
+    if (!InterlockedExchange(&told, 1)) hos_log("bcat: no delivery cache (offline): MountDeliveryCacheStorage -> 0x47a");
+    RET(0x47A);
+}
+/* nn::streamplay::GetRequiredMemorySize(StreamPlayType, StreamingMode, int) -> size_t: 0. A choice, not a console's
+   answer: GameShare (streaming the game to another console) is not available here, and with no streaming the game
+   needs no memory for it. Bananza goes on with 0, and asks the streamplay service nothing else. The lifted SDK opened
+   that service through sm: to ask, and aborted on the empty reply (svcBreak from
+   nn::streamplay::detail::CreateUserServiceByHipc). */
+HLE(_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi) {
+    static volatile LONG told;
+    if (!InterlockedExchange(&told, 1)) hos_log("streamplay: GameShare is not available: GetRequiredMemorySize -> 0");
+    RET(0);
 }
 
 /* ---- nn::time: the host clock --------------------------------------------------------------------------------- */

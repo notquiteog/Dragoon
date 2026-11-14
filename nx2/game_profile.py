@@ -3,17 +3,18 @@ that game's rather than the engine's.
 
 The lifter, the Horizon runtime and the Vulkan back end are general; a handful of things are not, and before this file
 they were written as literals wherever they were needed: patch modules for one build of one game, offsets into one
-game's graphics module, the return address that identifies that module, one game's shader program keys, and the one
-build make_game.py accepts. Retargeting meant finding them all, which is the work this file exists to stop repeating.
+game's graphics module, the return addresses the runtime recognised that game's calls by, one game's shader program
+keys, and the one build make_game.py accepted. This is the seam the engine's forks for other games (Lakitu: Mario Kart
+World, Dragoon: Kirby Air Riders) built and converged on, so that a second game is a profile and its own patch modules,
+not an edit to the engine (docs/one-engine.md):
 
-This is the same seam as Lakitu's (the Mario Kart World fork: nx2/game_profile.py, game/game_profile.h, the GAME_*
-macros), so that a profile written for one fork reads the same in the other. Dragoon adds three things it needs:
-
-  - the game is chosen by the build id of the dump's main, as host/hos_main.c's hos_game_is_mkw() always did, and
-    not only by a switch: for_build() below. HOOKSHOT_GAME=<key> still overrides it.
-  - the return address the runtime captures the graphics module at (Hooks), which was the one place the runtime
-    recognised Ocarina by an address on every run, whatever the game.
-  - how many Npads the game is served by default (HOS_NPAD_PLAYERS still overrides it).
+  - the game is chosen by the build id of the dump's main (for_build), as host/hos_main.c's hos_game_is_mkw() always
+    did; HOOKSHOT_GAME=<key> only overrides it, and a build no profile knows gets NONE, which patches nothing;
+  - the return addresses the runtime recognises are the profile's (Hooks), and are recognised only in the build the
+    profile is for (host/hos_main.c hos_game_profile_live);
+  - the renderer is built once for every game, so it is handed the game's program keys at run time (HOOKSHOT_PROFILE_*);
+  - every profile's patch modules are roots of the lift's cache key (nx2/make_game.py lift_sources), and load_module is
+    the one place they are imported by name.
 
 What belongs here: the game's identity (program id, version, main's build id) as nx2/dump.py reports it; the base of
 its main in the lifted image; which lift patch modules and which code patch module apply; the offsets into its
@@ -34,10 +35,11 @@ patches nothing and hooks nothing: lifting an unknown game must not apply Ocarin
     python -I nx2/game_profile.py                       # what the profiles hold
     python -I nx2/game_profile.py --emit-header         # rewrite game/game_profile.h (DEFAULT's) from this file
     python -I nx2/game_profile.py --check-header        # the committed header still matches (tests/test_game_profile.py)
-    python -I nx2/game_profile.py --emit-header --game kar --out <dir>   # one game's header, as a lift writes it
+    python -I nx2/game_profile.py --emit-header --game oot --out <dir>   # one game's header, as a lift writes it
 """
 import argparse
 import collections
+import importlib
 import inspect
 import os
 import sys
@@ -45,16 +47,17 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 HEADER = os.path.join(HERE, "..", "game", "game_profile.h")
 
-# The project's own name, which is not game data. One constant, as in Lakitu's seam.
+# The project's own name, which is not game data: it names the release files (scripts/product_name.sh). A fork's
+# rename is this one line.
 PROJECT = "Dragoon"
 
-# The offsets into the game's graphics module that host/nn_vi.c reads (Lakitu's shape, field for field).
+# The offsets into the game's graphics module that host/nn_vi.c reads.
 Gfx = collections.namedtuple("Gfx", "frame_limiter nominal_fps vrr_mode vrr_gate controller controller_words "
                                     "controller_rate_words")
 EMPTY_GFX = Gfx(frame_limiter=None, nominal_fps=None, vrr_mode=None, vrr_gate=None, controller=None,
                 controller_words=(), controller_rate_words=())
 
-# The shader program keys the renderer treats specially (Lakitu's shape). A key is the 64-bit hash of a program's
+# The shader program keys the renderer treats specially. A key is the 64-bit hash of a program's
 # SASS, so it is per game and per build; the renderer takes prefixes, as its RX_VK_* overrides do.
 #   taau:         programs the compute stand-in replaces (gpu/vk/vk_draw.cpp taau_key, RX_VK_TAAU_KEYS)
 #   gameplay:     networks treated as the game's own upscale, never dropped when the movie networks are slow
@@ -62,7 +65,7 @@ EMPTY_GFX = Gfx(frame_limiter=None, nominal_fps=None, vrr_mode=None, vrr_gate=No
 Upscale = collections.namedtuple("Upscale", "taau gameplay network_keep")
 EMPTY_UPSCALE = Upscale(taau=(), gameplay=(), network_keep=())
 
-# (Dragoon) Return addresses the runtime recognises a call of the game's by. Each is the address after a bl in the
+# Return addresses the runtime recognises a call of the game's by. Each is the address after a bl in the
 # game's main, so it is one build's and nothing else's: on another game the same number is some unrelated call.
 #   gfx_clock:      after the graphics module's frame-end GetSystemTick; x19 there is the module (host/hos_thread.c).
 #                   Without it no module is captured and nn_vi.c's real-time step and frame-limiter work stay off.
@@ -90,7 +93,9 @@ class Profile(object):
         self.gfx = gfx
         self.upscale = upscale
         self.hooks = hooks
-        self.npad_players = npad_players              # 1..8, or "auto": one per attached controller
+        # 1..8, or "auto": one per attached controller. The default player count for the forks' multi-player input
+        # (Dragoon's HOS_NPAD_PLAYERS); nothing in this engine reads it yet, Ocarina's one pad being the only input here
+        self.npad_players = npad_players
         self.account_users = account_users            # the console's users (nn::account), 1..8
         self.notes = notes
 
@@ -211,19 +216,11 @@ def known_builds():
 
 # ---- the lift ----
 
-def module(name):
-    """A game's lift or code patch module by the name a profile gives it. Every one is imported here by name, inside
-    this function so that only a lift loads them: nx2/make_game.py's lift_sources() follows import statements to key the
-    lift's cache, and a module imported by a name made at run time would be a change to the lift it cannot see."""
-    import oot_wide
-    import oot_fov
-    import oot_jitter
-    import oot_occlusion
-    import oot_patches
-    found = {m.__name__: m for m in (oot_wide, oot_fov, oot_jitter, oot_occlusion, oot_patches)}
-    if name not in found:
-        raise SystemExit("game profile: no module %r: import it in nx2/game_profile.py's module()" % name)
-    return found[name]
+def load_module(name):
+    """A game's patch module by the name its profile holds. This is the one place the lift imports a module by a name made
+    at run time; nx2/make_game.py lift_sources takes every profile's modules into the lift's cache key, because its walk
+    of import statements cannot see these (tests/test_lift_cache.py)."""
+    return importlib.import_module(name)
 
 
 def install_patches(lifter, img, profile, build_id="", log=print):
@@ -234,7 +231,7 @@ def install_patches(lifter, img, profile, build_id="", log=print):
         return 0
     total = 0
     for name in profile.patch_modules:
-        install = module(name).install
+        install = load_module(name).install
         n = len(inspect.signature(install).parameters)
         total += (install(lifter, img, build_id) if n >= 3 else install(lifter, img)) or 0
     return total
@@ -258,9 +255,9 @@ def _init(fmt, values):
 
 def saves_dir(profile):
     """The saves' folder name under $XDG_DATA_HOME on Linux: Ocarina's "hookshot", where its players' saves have always
-    been; any other game's "hookshot-<key>" (Kirby's "hookshot-kar"). The save folder holds save/<user id>/ with the
-    game's own files in it and nothing that says which game wrote them, so two games sharing one would read, and
-    overwrite, each other's (DK Bananza fork, 4f417fd7)."""
+    been; any other game's "hookshot-<key>". The save folder holds save/<user id>/ with the game's own files in it and
+    nothing that says which game wrote them, so two games sharing one would read, and overwrite, each other's
+    (DK Bananza fork, 4f417fd7)."""
     return "hookshot" if profile.key == "oot" else "hookshot-" + profile.key
 
 

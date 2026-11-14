@@ -9,8 +9,12 @@ What this pins down:
             user not open, in turn, and a failure (never a user, never success) once all four are; a closed user
             can be chosen again; GetUserId answers the handle's own uid, not user 1's.
   push      PushOpenUsers keeps the open users and PopOpenUsers gives them back once.
-  refusals  OpenUser of a uid that is not a user here, LoadProfileImage and the token cache answer failures and
-            leave no size behind.
+  Ocarina's answers, as this runtime always gave them (both cases): TryOpenPreselectedUser's handle has 1 in its
+            third word and OpenUser's 0; OpenUser of a uid that is not a user here succeeds with that uid; GetUserId of
+            a handle that names no user answers user 1; the network service token cache has no handler here (the
+            generic stub's answer, as before).
+  refusals  LoadProfileImage answers a failure and leaves no size behind; ShowUserSelector with no Uid to fill fails;
+            PopOpenUsers and ShowUserSelector take null pointers.
 
 python -I -B tests/test_account_users.py [--cc gcc]
 """
@@ -36,6 +40,7 @@ FIXTURE = r'''
 typedef int32_t LONG;
 static LONG InterlockedIncrement(volatile LONG *p) { return ++*p; }
 static LONG InterlockedDecrement(volatile LONG *p) { return --*p; }
+static LONG InterlockedExchange(volatile LONG *p, LONG v) { LONG o = *p; *p = v; return o; }   /* (for any neighbour) */
 typedef struct { uint64_t x[32]; } Ctx;
 #define HLE(sym) static void sym(Ctx *c)
 static unsigned char memory[4096];
@@ -66,9 +71,20 @@ int main(int argc, char **argv) {
     const char *name = argc > 1 ? argv[1] : "";
     const uint64_t hi = 0x5a3c9e1f0b7d2468ULL;
     CALL(_ZN2nn7account22TryOpenPreselectedUserEPNS0_10UserHandleE, HANDLE);
-    CHECK(r == 1 && G64(HANDLE) == 1 && G64(HANDLE + 8) == hi);   /* (user 1: the uid there always was) */
+    CHECK(r == 1 && G64(HANDLE) == 1 && G64(HANDLE + 8) == hi && G64(HANDLE + 16) == 1);   /* (user 1: as always) */
     CALL(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE, OUT, HANDLE);
     CHECK(r == 0 && G64(OUT) == 1 && G64(OUT + 8) == hi);
+    /* Ocarina's OpenUser and GetUserId, as this runtime always answered them */
+    open_uid(1, hi, HANDLE + 1024);
+    CHECK(r == 0 && G64(HANDLE + 1024) == 1 && G64(HANDLE + 1032) == hi && G64(HANDLE + 1040) == 0);
+    CALL(_ZN2nn7account9CloseUserERKNS0_10UserHandleE, HANDLE + 1024);
+    open_uid(9, hi ^ 1, HANDLE + 1024);   /* (not a user here: opened all the same) */
+    CHECK(r == 0 && G64(HANDLE + 1024) == 9 && G64(HANDLE + 1032) == (hi ^ 1) && G64(HANDLE + 1040) == 0);
+    CALL(_ZN2nn7account9GetUserIdEPNS0_3UidERKNS0_10UserHandleE, OUT, HANDLE + 1024);
+    CHECK(r == 0 && G64(OUT) == 1 && G64(OUT + 8) == hi);   /* (a handle of no user here: user 1) */
+    CALL(_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE, 0, SETTINGS);
+    CHECK(r != 0);   /* (no Uid to fill) */
+    CALL(_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi, 0, 0, 8);   /* (nothing to write to: no crash) */
     CALL(_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi, 32, LIST, 8);
     const int users = (int)G32(32);
     if (!strcmp(name, "one")) {
@@ -108,16 +124,12 @@ int main(int argc, char **argv) {
     CALL(_ZN2nn7account12PopOpenUsersEPiPNS0_10UserHandleEi, 32, LIST, 8);
     CHECK(r == 0 && G32(32) == 0);
     /* refusals */
-    open_uid(9, hi, HANDLE);
-    CHECK(r != 0);
-    open_uid(1, hi ^ 1, HANDLE);
-    CHECK(r != 0);
     G64(OUT) = 77;
     CALL(_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE, OUT, NICK, 64, UID);
     CHECK(r != 0 && G64(OUT) == 0);
-    G64(OUT) = 77;
-    CALL(_ZN2nn7account37LoadNetworkServiceAccountIdTokenCacheEPmPcmRKNS0_10UserHandleE, OUT, NICK, 64, HANDLE);
-    CHECK(r != 0 && G64(OUT) == 0);
+    G64(UID) = G64(UID + 8) = 0;
+    CALL(_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE, UID, 0);   /* (no settings) */
+    CHECK(r == 0 && G64(UID) == 3);
     printf("PASS: account four\n");
     return 0;
 }
@@ -130,10 +142,13 @@ def main():
     a = p.parse_args()
     applet = (ROOT / "host" / "nn_applet.c").read_text(encoding="utf-8")
     start = applet.index("/* ---- nn::account: the users")
-    end = applet.index("/* ---- nn::time: the host clock", start)
+    end = applet.index("\n/* ---- ", start + 1)   # (to the next section, whichever it is: not past it into others' code)
     block = applet[start:end]
     if "ShowUserSelector" not in block or "GAME_ACCOUNT_USERS" not in block:
         raise SystemExit("host/nn_applet.c: the account block no longer has the user selector or the profile's count")
+    if "IdTokenCacheEPmPcmRKNS0_10UserHandleE)" in applet:
+        raise SystemExit("host/nn_applet.c: LoadNetworkServiceAccountIdTokenCache has a handler: Ocarina's answer was the "
+                         "generic stub's")
     header = (ROOT / "game" / "game_profile.h").read_text(encoding="utf-8")
     profile = re.search(r"^#define GAME_ACCOUNT_USERS [^\n]+", header, re.M).group(0)
     env = {k: v for k, v in os.environ.items() if k != "HOS_ACCOUNT_USERS"}
