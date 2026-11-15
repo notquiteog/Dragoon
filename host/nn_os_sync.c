@@ -495,8 +495,12 @@ static void mutex_lock(Obj *m, uint64_t guest, Ctx *c) {
             hos_cv_sleep(&m->cv, &m->lk, 2000);
             if (told_at && hos_now_ns() > told_at) {
                 HosThread *h = __atomic_load_n(&m->owner, __ATOMIC_RELAXED);
-                hos_log("mutex %#llx (obj %p): %s waiting 10 s; held by %s (count %d, %d waiting)", (unsigned long long)guest, (void *)m,
-                        hos_thread_name(self), h ? hos_thread_name(h) : "nobody", m->count, (int)m->mwait);
+                hos_log("mutex %#llx (obj %p): %s waiting 10 s; held by %s%s (count %d, %d waiting; lr %#llx)",
+                        (unsigned long long)guest, (void *)m, hos_thread_name(self), h ? hos_thread_name(h) : "nobody",
+                        h == self ? " (the waiter itself: a lock taken again by its holder)" : "", m->count, (int)m->mwait,
+                        (unsigned long long)(c ? c->x[30] : 0));
+                void hos_backtrace(void);
+                hos_backtrace();   /* (the waiter's guest frames: where it asked) */
                 told_at = 0;
             }
         }

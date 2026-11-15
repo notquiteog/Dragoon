@@ -560,6 +560,46 @@ HLE(_ZN2nn2pl20GetSharedFontAddressENS0_14SharedFontTypeE) {
 }
 HLE(_ZN2nn2pl17GetSharedFontSizeENS0_14SharedFontTypeE) { RET(0); }
 
+/* (dragoon, probe) nn::pl::GetBuiltInFontData(BuiltInFontDataOunce* out, BuiltInFontTypeOunce type, bool) -> bool: the
+   Switch 2 system fonts. The SDK's own form (sdk 0x8e2e10e0) asks the pl service whether the font is there and, if it
+   is, fills {u8 type; u8 flag; ...; u64 address in the font shared memory @8; u64 size @0x10} and answers true. Kirby
+   Air Riders asks for type 0, 1, 2, ... and sleeps 5 ms and asks again while the answer is false, forever (main
+   0x84cf9860): with no answer it never got past it. HOS_BUILTIN_FONT=<ttf>: every type answered with that file's data
+   (a probe of what format the game's font code takes); unset, false as before. */
+static uint64_t builtin_font_at, builtin_font_size;
+static int builtin_font(void) {
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        const char *path = getenv("HOS_BUILTIN_FONT");
+        FILE *f = path && *path ? fopen(path, "rb") : NULL;
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            const long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (n > 0) {
+                builtin_font_at = hos_sys_alloc((uint64_t)n, 0x1000);
+                if (fread(GP(builtin_font_at), 1, (size_t)n, f) == (size_t)n) builtin_font_size = (uint64_t)n;
+            }
+            fclose(f);
+        }
+        hos_log("pl: built-in fonts %s (%s, %llu bytes)", builtin_font_size ? "answered" : "not here", path ? path : "HOS_BUILTIN_FONT unset",
+                (unsigned long long)builtin_font_size);
+    }
+    return builtin_font_size != 0;
+}
+HLE(_ZN2nn2pl18GetBuiltInFontDataEPNS0_20BuiltInFontDataOunceENS0_20BuiltInFontTypeOunceEb) {
+    static int told;
+    if (told++ < 16) hos_log("pl: GetBuiltInFontData type %u (%u; lr %#llx)", (unsigned)ARG(1), (unsigned)ARG(2), (unsigned long long)c->x[30]);
+    if (!ARG(0) || !builtin_font()) { RET(0); return; }
+    uint8_t *o = (uint8_t *)GP(ARG(0));
+    o[0] = (uint8_t)ARG(1);
+    o[1] = 0;
+    G64(ARG(0) + 8) = builtin_font_at;
+    G64(ARG(0) + 0x10) = builtin_font_size;
+    RET(1);
+}
+
 /* ---- nn::err ------------------------------------------------------------------------------------------------- */
 HLE(_ZN2nn3err9ShowErrorENS_6ResultE) { hos_log("err: the game shows error %#x (module %u, description %u)", (uint32_t)ARG(0),
                                                 (uint32_t)ARG(0) & 0x1FF, ((uint32_t)ARG(0) >> 9) & 0x1FFF); }

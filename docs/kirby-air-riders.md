@@ -600,6 +600,28 @@ Still answered by the generic stub on the way (0 and nothing written): `nn::ro::
      its first refusals and why; `HOS_NVN_LOG_POOLS=1` logs each memory pool initialized, by its object's guest
      address and caller.
 
+7. *Runs 19 to 26 (2026-11-14, main rc.21 merged, Hookshot#81).* **The PhysX crash is fixed.** The chain under it:
+   the manager's builder failed because the GPU allocator (vtable `0x88b43fa8`, `alloc` `f_84c6f9e0`) got pool handle
+   -1 from the pool manager (`f_84c59244`, manager at `ctx + 0x9620`), because the pool's storage allocator
+   (`f_80e50d10`, the game's virtual memory allocator) first asks `nn::os::IsVirtualAddressMemoryEnabled`, which is
+   `svcGetInfo(16, the process) != 0` (the SDK's `VammManager`). This runtime answered 0 for every game. The console
+   answers main.npdm's `system_resource_size` (Kirby 32 MB). Fixed in the engine: Hookshot#81 (`fix/system-resource-
+   size`, in Dragoon as fccf3e11). With it: 13 memory pools made at once, the Vulkan replay starts, NVN submits, a 2560x1440
+   window of 3 textures.
+   - **Next wall, the built-in fonts:** the game asks `nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, type, bool)`
+     for types 0 to 5 and, while the answer is false, sleeps 5 ms and asks again forever (main `0x84cf9860`); the job
+     worker spun there, the main thread joined it, the asset threads waited (`HOS_SAMPLE_ALL` stacks). The SDK's form
+     (sdk `0x8e2e10e0`) fills {u8 type, u8 flag, u64 address @8, u64 size @0x10} and answers true. A probe in this fork
+     (`HOS_BUILTIN_FONT=<ttf>`: every type answered with that file, here an OFL font) gets past it. Open: what format
+     the game's font code takes (a plain TTF went through the wait, nothing has drawn text yet), and which open fonts
+     to answer with for each type. Engine-wide: any Switch 2 game that waits on the system fonts.
+   - **Then dynamic modules:** `nn::ro` (`RegisterModuleInfo`, `GetBufferSize`, then `LoadModule`) is not answered;
+     `GetBufferSize` left the size as stack garbage and the game asked for 0x7fe8080000 bytes ("address space
+     exhausted"). Kirby ships one NRO, `romfs/Bin/Module/EffectScript.nro` (244 KB, with `.nrr/EffectScript.nrr`). A
+     static recompilation needs it lifted with the game and `nn::ro` answered by mapping the lifted module: engine work
+     for every game with NROs.
+   - The mutex report (host/nn_os_sync.c) now says when the holder is the waiter itself and prints the waiter's frames.
+
 ### What blocks a Kirby boot now, in order
 
 1. **The null manager above** (`[ctx + 0x9258]`, read in `f_84c61e80` from `f_84c5fbe0`): which call should have made
