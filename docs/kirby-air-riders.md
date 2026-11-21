@@ -652,6 +652,16 @@ Still answered by the generic stub on the way (0 and nothing written): `nn::ro::
      tick; the runtime brought the finalized queue back with no room, the event thread slept in `queue_put`, and the
      player, joining it (`0x82eeaa0c`), froze the game. Found with `HOS_SAMPLE_ALL` stacks during the freeze:
      Hookshot#104 (Finalize leaves the queue as it is, as Horizon's does).
-   - **Now:** no freeze; the game plays its next movies and goes on to `nn::nifm`. **The picture is black throughout**,
-     the intro movie included (3 draws a frame, 6 left out by `vk_draw.cpp` lines 9865 and 7231), and the control
-     status stays `intro`. Next: why the movie's pictures and the frame do not reach the screen.
+   - Then no freeze: the game played its next movies and went on to `nn::nifm`, but **the picture was black
+     throughout** (up to 578 draws a frame left out as "a draw without a program").
+
+9. *Runs 39 to 48 (2026-11-21): the black picture, two NVN program walls.* Both had to go for anything to draw:
+   - **BindProgram per stage** (Hookshot#112): Kirby binds a vertex program (stages 0x1), a fragment program (0x2) and
+     no geometry (NULL, 0x4) before each draw (main `0x84c567b4`/`c4`/`d4`, from the host call log of
+     `HOS_HOSTCALL_STATS`); the replays took each bind for the whole program and the null one for none.
+   - **Control sections kept** (Hookshot#111): the game reuses a stage's control section memory within frames of
+     setting the shaders; at the draw the replay found another object there (its first word a pointer, not
+     `0x98761234`) and could not read the stage.
+   - **Now (run 47):** the main menu, Lessons, the lesson video and Lesson 1 (Turning) drawn in 3D at 59-60 fps, up to
+     596 draws a frame, none left out; the control status says `play`. **Next:** Kirby and the near grass are lit too
+     dark in play; then the menus' input (A reached the lessons; the stick and the other buttons untried).
