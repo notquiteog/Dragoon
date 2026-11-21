@@ -640,3 +640,18 @@ Still answered by the generic stub on the way (0 and nothing written): `nn::ro::
    the profile's comments.
 5. **Local play**: 17 `nn::ldn` calls refused (§4), and 47 `nn::socket` and 9 `nn::nifm` ones stubbed, which keeps
    the game offline.
+
+8. *Runs 27 to 38 (2026-11-14 to 2026-11-21).* NRO modules lifted and `nn::ro` answered (Hookshot#89), the touch
+   screen's state calls (#88), the save and cache storage sizes (#91), GameShare's guest displays and two audio calls
+   (#93). Kirby then runs its intro movie (VP9) at 59-60 fps. Two walls behind it, each in the runtime's `nn::os` model:
+   - **`StopTimerEvent`** (and Clear, Signal, timed receive, thread try-wait and core mask), left to the lifted SDK,
+     read the SDK's layout of an event the runtime keeps itself and faulted at guest 0x10 when A stopped the movie
+     (main `0x82ef47c8`): Hookshot#100.
+   - **A send to a finalized queue slept for good.** The movie player finalizes its video thread's queue
+     (`0x82ef3d14`) while its frame timer's callback (`0x82ef5458`, on the event thread's multi-wait) still sends it a
+     tick; the runtime brought the finalized queue back with no room, the event thread slept in `queue_put`, and the
+     player, joining it (`0x82eeaa0c`), froze the game. Found with `HOS_SAMPLE_ALL` stacks during the freeze:
+     Hookshot#104 (Finalize leaves the queue as it is, as Horizon's does).
+   - **Now:** no freeze; the game plays its next movies and goes on to `nn::nifm`. **The picture is black throughout**,
+     the intro movie included (3 draws a frame, 6 left out by `vk_draw.cpp` lines 9865 and 7231), and the control
+     status stays `intro`. Next: why the movie's pictures and the frame do not reach the screen.
