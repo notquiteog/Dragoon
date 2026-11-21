@@ -23,7 +23,10 @@ spec.loader.exec_module(make_game)
 builder = next(node for node in ast.parse(SOURCE.read_text(encoding="utf-8")).body
                if isinstance(node, ast.ClassDef) and node.name == "Builder")
 build = next(node for node in builder.body if isinstance(node, ast.FunctionDef) and node.name == "build")
-BUILD = compile(ast.Module(body=[build], type_ignores=[]), str(SOURCE), "exec")
+# (and the module's dlss_args, which build calls ticked or not: the DLSS tick's flags, --no-dlss when unticked)
+dlss_args = next(node for node in ast.parse(SOURCE.read_text(encoding="utf-8")).body
+                 if isinstance(node, ast.FunctionDef) and node.name == "dlss_args")
+BUILD = compile(ast.Module(body=[dlss_args, build], type_ignores=[]), str(SOURCE), "exec")
 
 
 def value(text):
@@ -42,8 +45,9 @@ class BuildHarness:
         exefs.mkdir(exist_ok=True)
         self.gui = SimpleNamespace(
             out=value(str(folder / "out")), kind=value(kind), nup=value(str(nup)),
-            romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"),
-            cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None)
+            romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"), prepare=value(True), compile_level=lambda: "most",
+            cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None,
+            tick=lambda: self.events.append(("tick",)))
 
         def start_process(command, **kwargs):
             self.events.append(("process",))
@@ -59,7 +63,10 @@ class BuildHarness:
             "sys": sys, "make_game": make_game,
             # (toolchain.default_jobs is only asked for RX_JOBS now: it answers RX_JOBS as the real one does)
             "toolchain": SimpleNamespace(default_jobs=lambda: max(1, int(self.environ["RX_JOBS"]))),
-            "messagebox": SimpleNamespace(showerror=lambda title, text: self.events.append(("error", title, text))),
+            "messagebox": SimpleNamespace(showerror=lambda title, text: self.events.append(("error", title, text)),
+                                          askokcancel=lambda title, text: True),
+            # (the hard drive warning is asked first: these builds are on a folder that is not a hard drive)
+            "slow_disk_warning": lambda folder: None,
             "save_config": lambda cfg: self.events.append(("save", dict(cfg))),
             "time": SimpleNamespace(time=lambda: 123.0),
             "subprocess": SimpleNamespace(Popen=start_process, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT),
@@ -79,18 +86,20 @@ class BuilderBuildJobsTests(unittest.TestCase):
         self.folder = Path(self.temporary.name)
 
     def assert_started(self, harness, jobs=None):
-        self.assertEqual([event[0] for event in harness.events], ["save", "progress", "process", "thread", "start"])
+        self.assertEqual([event[0] for event in harness.events], ["save", "progress", "process", "thread", "start", "tick"])
         gui = harness.gui
         source = ["--nup", gui.nup.get()] if gui.kind.get() == "nup" else ["--romfs", gui.romfs.get(), "--exefs", gui.exefs.get()]
         expected = [sys.executable, "-I", str(ROOT / "nx2" / "make_game.py")] + source + [
-            "--out", gui.out.get(), "--language", "en-US"] + ([] if jobs is None else ["--jobs", str(jobs)])
+            "--out", gui.out.get(), "--language", "en-US"] + ([] if jobs is None else ["--jobs", str(jobs)]) + [
+            "--compile-shaders", "most", "--no-dlss"]   # (the DLSS tick off: make_game.py takes out the runtimes it placed)
         self.assertEqual(len(harness.processes), 1)
         command, options = harness.processes[0]
         self.assertEqual(command, expected)
         self.assertEqual(options, dict(cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                        encoding="utf-8", errors="replace", start_new_session=True))
         self.assertEqual(harness.events[0][1], dict(previous="kept", kind=gui.kind.get(), nup=gui.nup.get(),
-                                                  romfs=gui.romfs.get(), exefs=gui.exefs.get(), out=gui.out.get(), language="en-US"))
+                                                  romfs=gui.romfs.get(), exefs=gui.exefs.get(), out=gui.out.get(), language="en-US",
+                                                  prepare="1", compile_shaders="most"))
         self.assertEqual(harness.events[3][1], dict(target=gui.read, args=(gui.proc,), daemon=True))
 
     def test_positive_hookshot_jobs_is_passed_on(self):
@@ -98,6 +107,22 @@ class BuilderBuildJobsTests(unittest.TestCase):
         harness.run()
         self.assert_started(harness, 4)
         self.assertEqual(harness.environ, {"HOOKSHOT_JOBS": "4", "RX_JOBS": "2"})
+
+    def test_unticked_prepare_leaves_the_shaders_to_the_first_start(self):
+        harness = BuildHarness(self.folder, {})
+        harness.gui.prepare = value(False)
+        harness.run()
+        command, _ = harness.processes[0]
+        self.assertEqual(command[-4:], ["--no-prepare-shaders", "--compile-shaders", "most", "--no-dlss"])
+        self.assertEqual(harness.events[0][1]["prepare"], "0")
+
+    def test_compile_shaders_all_is_passed_on(self):
+        harness = BuildHarness(self.folder, {})
+        harness.gui.compile_level = lambda: "all"
+        harness.run()
+        command, _ = harness.processes[0]
+        self.assertEqual(command[-3:], ["--compile-shaders", "all", "--no-dlss"])
+        self.assertEqual(harness.events[0][1]["compile_shaders"], "all")
 
     def test_zero_falls_back_to_rx_jobs_for_extracted_folders(self):
         harness = BuildHarness(self.folder, {"HOOKSHOT_JOBS": "0", "RX_JOBS": "2"}, kind="folders")

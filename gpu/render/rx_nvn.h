@@ -49,14 +49,14 @@ typedef struct { uint32_t magic, flags, origin, depth_mode; } nvn_dev;
 typedef struct { void *dev; uint32_t flags; uint64_t cmd_sz, comp_sz, ctl_sz, flush; uint64_t mem, mem_sz; } nvn_queue_builder;
 typedef struct { uint32_t magic; uint64_t submits; } nvn_queue;
 
-/* a memory pool: mem = host pointer of its storage (null: a virtual pool), gpu = its GPU address */
+/* a memory pool: mem = guest address of its storage (0: a virtual pool), gpu = its GPU address. (hookshot) The object
+   is guest memory, so it holds no host pointers: a virtual pool's page table is found by its GPU address. */
 typedef struct { void *dev; uint64_t mem; uint64_t size; uint32_t flags; } nvn_pool_builder;   /* mem: guest address */
-typedef struct nvn_vmap nvn_vmap;
 typedef struct {
     uint32_t magic, flags;
-    uint8_t *mem;                         /* host pointer of the storage (null for a virtual pool) */
+    uint64_t mem;                         /* guest address of the storage (0 for a virtual pool) */
     uint64_t size, gpu;                   /* GPU address: the guest address, or a virtual pool's range above 4 GB */
-    nvn_vmap *vmap;                       /* virtual pools: the page table */
+    uint64_t reserved;
 } nvn_pool;
 typedef struct { const nvn_pool *pool; int64_t off; int32_t n; } nvn_dpool;   /* texture / sampler descriptor pool */
 
@@ -75,6 +75,14 @@ typedef struct {
     const nvn_pool *pool; int64_t off;
     uint64_t serial;                      /* one per initialization: the game copies texture objects by value */
 } nvn_tex;
+/* (hookshot) A texture object from the game's memory, as the renderer may take it: copied, its layout computed again from
+   its description (the stored one is the game's bytes, which may say anything), and refused (0) when that description
+   is past any texture a GPU makes: a side past 65,536 texels, more than 17 levels, a sample count NVN has not, or storage
+   past the console's 16 GiB. host/nvn_layout.c; every route of a texture object into the renderer goes through it */
+#define NVN_TEX_MAX_DIM 65536u
+#define NVN_TEX_MAX_LEVELS 17u
+#define NVN_TEX_MAX_BYTES (16ull << 30)
+int nvn_tex_sanitize(const nvn_tex *in, nvn_tex *out);
 /* TOTK reserves 16 bytes for a view on its stack (main+0x823398): packed */
 typedef struct {
     uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, pad0 : 3;
@@ -100,21 +108,23 @@ typedef struct { uint32_t magic; uint64_t gpu; } nvn_event;   /* gpu: the 32-bit
 typedef struct { void *dev; uint64_t native; int32_t ntex, interval, active; uint64_t tex[4]; } nvn_win_builder;   /* tex: guest addresses */
 typedef struct {
     uint32_t magic; int32_t ntex, interval, next, active, crop[4];
-    nvn_tex *tex[4];
+    uint64_t tex[4];                      /* (hookshot) guest addresses, checked at each use */
     uint64_t presents;
 } nvn_win;
 
 /* a command buffer: records go to a growable host buffer (never into the game's command memory) */
+/* (hookshot) The object is guest memory: the recording buffer's pointers (seg, cur, end) are kept in a host table
+   (host/nvn_native.c cmd_rec), and the object holds only its slot there, which names the object it belongs to. */
 typedef struct {
     uint32_t magic, recording;
-    uint8_t *cur;
+    uint32_t slot, slot_pad;              /* the host table's slot (0: none yet) */
     uint64_t guest_flags;                 /* +0x10: NVN 55 inline code writes a dirty flag here */
-    uint8_t *end;
+    uint64_t reserved_18;
     /* NVN 55 headers inline fast paths that read the write pointer at +0x20 and its end at +0x28 (main+0x70644c) and
        emit raw GPU methods when 0x30 bytes fit: ~0 / 0 never fits, so every call takes the API (*Deferred) path */
     uint64_t inline_cur, inline_end;
     uint64_t cb, cb_data;                 /* the memory callback (guest), never called: records live in host memory */
-    uint8_t *seg;                         /* the recording buffer */
+    uint64_t reserved_40;
     uint64_t ctl, ctl_size;               /* control memory the game gave (guest): a handle lives as long as it */
     uint64_t game_size;                   /* command memory the game gave (accounting only) */
     uint64_t cmd_used, ctl_used, rec_start;
@@ -246,6 +256,8 @@ void rx_nvn_set_texture_pool_size(int n);
 void rx_nvn_texture_released(const nvn_tex *t);
 void rx_nvn_texture_created(const nvn_tex *t);
 void rx_nvn_program_released(const nvn_prog *p);
+/* (hookshot) a program was given its shaders (the Vulkan back end loads what it kept for it; WebGPU: nothing) */
+void rx_nvn_program_created(const nvn_prog *p);
 /* CPU reads / writes of a texture (ReadTexels / WriteTexels) */
 void rx_nvn_read_texels(const nvn_tex *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst,
                         size_t row, size_t img);
@@ -261,5 +273,71 @@ void rx_nvn_vmap_changing(uint64_t gpu, uint64_t size);
 void rx_nvn_event_signal(uint64_t gpu, uint32_t value);
 
 #ifdef __cplusplus
+}
+
+#include <cstring>
+/* nvnCommandBufferBindProgram(cmd, program, stages) binds the program's stages that `stages` names, and only those
+   (NVNshaderStageBits: 1 << the NVN stage, which a stage's control section has at +0x56: 0 vertex, 1 fragment, 2
+   geometry, 3 and 4 tessellation, 5 compute, 6 and 7 task and mesh); the other stages stay as they were bound, and a
+   null program unbinds the stages named. Both replays (rx_nvn.cpp, vk_replay.cpp) took each bind for the whole program
+   and a null one for none: Kirby Air Riders binds a vertex program (0x1), a fragment program (0x2) and no geometry
+   (NULL, 0x4) before each draw, and every draw was left out ("a draw without a program"; a black screen behind its
+   movies). A bind of all the graphics stages (0x1f) or of compute alone (0x20) is the program as it is, as before.
+   cur: the bound stages, as one program (has: whether any are bound); serials[8]: by stage, the serial of the program
+   each bound stage came from (the replay's state keeps them); read(gpu, dst, n): the replay's read of GPU memory.
+   Returns whether a stage is bound after it. */
+template <class Read> inline uint32_t nvn_stage_type(const nvn_stage_data &sd, Read &read) {
+    uint16_t st = 0xffff;
+    if (sd.control) read(sd.control + 0x56, &st, 2);
+    return st;
+}
+template <class Read>
+inline bool nvn_bind_stages(nvn_prog &cur, bool has, const nvn_prog *prog, uint32_t stages, uint64_t serials[8],
+                            Read &&read) {
+    if (prog && ((stages & 0x1f) == 0x1f || stages == 0x20)) {   /* (the whole program, as before) */
+        cur = *prog;
+        for (int t = 0; t < 8; t++) serials[t] = prog->serial;
+        return prog->nstage > 0;
+    }
+    struct Entry { uint32_t type; nvn_stage_data sd; uint64_t serial; };
+    Entry e[12];
+    int n = 0;
+    const int compute = stages == 0x20;   /* (a bind of one kind drops the other kind's stages, as the whole binds do) */
+    bool removed = false, all_of_prog = prog != nullptr;
+    if (has)
+        for (uint32_t i = 0; i < cur.nstage && i < 6; i++) {
+            const uint32_t t = nvn_stage_type(cur.sd[i], read);
+            if (t < 32 && ((stages >> t & 1) || (t == 5) != compute)) { removed = true; continue; }
+            e[n++] = {t, cur.sd[i], t < 8 ? serials[t] : cur.serial};
+            all_of_prog = false;
+        }
+    if (prog)
+        for (uint32_t i = 0; i < prog->nstage && i < 6; i++) {
+            const uint32_t t = nvn_stage_type(prog->sd[i], read);
+            if (t < 32 && !(stages >> t & 1)) { all_of_prog = false; continue; }
+            e[n++] = {t, prog->sd[i], prog->serial};
+            if (t < 8) serials[t] = prog->serial;
+        }
+    if (all_of_prog) {   /* (nothing else bound: the program as it is, its own serial) */
+        cur = *prog;
+        return prog->nstage > 0;
+    }
+    if (!prog && !removed) return has;   /* (unbinding stages none of which is bound: nothing changes) */
+    for (int i = 1; i < n; i++)   /* (by stage, vertex first) */
+        for (int j = i; j > 0 && e[j - 1].type > e[j].type; j--) { const Entry x = e[j]; e[j] = e[j - 1]; e[j - 1] = x; }
+    nvn_prog out;
+    std::memset(&out, 0, sizeof out);
+    out.magic = prog ? prog->magic : cur.magic;
+    /* (a program of its own for the replays' caches, which go by serial (codes, layouts): the same stages of the same
+       programs give the same one. Serials from nvn_native.c's counter never have the top bit) */
+    uint64_t h = 1469598103934665603ull;
+    for (int k = 0; k < n && out.nstage < 6; k++) {
+        out.sd[out.nstage++] = e[k].sd;
+        const uint64_t v[4] = {(uint64_t)e[k].type, e[k].sd.data, e[k].sd.control, e[k].serial};
+        for (int j = 0; j < 4; j++) h = (h ^ v[j]) * 1099511628211ull;
+    }
+    out.serial = h | 0x8000000000000000ull;
+    cur = out;
+    return out.nstage > 0;
 }
 #endif

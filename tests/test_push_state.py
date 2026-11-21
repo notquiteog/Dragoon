@@ -8,18 +8,11 @@ import argparse
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
@@ -34,7 +27,7 @@ def main():
     if "RX_VK_PUSH_STATE_OLD" not in bind:
         raise SystemExit("the old bookkeeping has no switch")
     full = bind[: bind.index("static thread_local std::vector<VkWriteDescriptorSet> changed")]
-    if "ps.words.clear(), ps.at.clear()" not in full or "ps.n = dw().writes.size()" not in full:
+    if "ps.words.clear(), ps.at.clear()" not in full or "ps.n = wr.writes.size()" not in full:
         raise SystemExit("a full push does not remember its words")
     fixture = f'''#include <cstdint>
 #include <cstdio>

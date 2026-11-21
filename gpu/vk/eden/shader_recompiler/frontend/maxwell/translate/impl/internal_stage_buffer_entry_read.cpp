@@ -35,7 +35,8 @@ IR::U32 scaleIndex(IR::IREmitter& ir, IR::U32 index, Shift shift) {
         case Shift::Default: return index;
         case Shift::U16: return ir.ShiftLeftLogical(index, ir.Imm32(1));
         case Shift::B32: return ir.ShiftLeftLogical(index, ir.Imm32(2));
-        default: UNREACHABLE();
+        // (hookshot) the field is 2 bits: 3 is not an encoding, and a malformed program must be refused, not reach an UNREACHABLE
+        default: throw NotImplementedException("ISBERD shift {}", static_cast<u64>(shift));
     }
 }
 
@@ -46,7 +47,7 @@ IR::U32 skewBytes(IR::IREmitter& ir, SZ sizeRead) {
         case SZ::U16: return ir.ShiftLeftLogical(lane, ir.Imm32(1));
         case SZ::U32:
         case SZ::F32: return ir.ShiftLeftLogical(lane, ir.Imm32(2));
-        default: UNREACHABLE();
+        default: throw NotImplementedException("ISBERD size {}", static_cast<u64>(sizeRead));   // (4 bits: 4-15 are not encodings)
     }
 }
 
@@ -88,7 +89,7 @@ void TranslatorVisitor::ISBERD(u64 insn) {
         case SZ::U16: globalLoaded = ir.LoadGlobalU16(index64); break;
         case SZ::U32:
         case SZ::F32: globalLoaded = ir.LoadGlobal32(index64);  break;
-        default: UNREACHABLE();
+        default: throw NotImplementedException("ISBERD size {}", static_cast<u64>(isberd.sz.Value()));
         }
         X(isberd.dest_reg.Value(), globalLoaded);
 
@@ -127,7 +128,7 @@ void TranslatorVisitor::ISBERD(u64 insn) {
 
 // nx2 pseudo instruction for the ISBERD/ISBEWR of Switch 2 task and mesh programs (see
 // frontend/ampere/lower_to_maxwell.h). Addresses are linear bytes in the stage buffer: reads come
-// from the input attribute region, writes go to the output attribute or map region.
+// from the input attribute region (or with .O the output one, read back), writes go to the output attribute or map region.
 void TranslatorVisitor::ISBE_nx2(u64 insn) {
     union {
         u64 raw;
@@ -136,6 +137,7 @@ void TranslatorVisitor::ISBE_nx2(u64 insn) {
         BitField<20, 24, u64> offset;
         BitField<44, 1, u64> is_32;
         BitField<45, 1, u64> attribute;
+        BitField<47, 1, u64> output;
         BitField<48, 1, u64> write;
     } const isbe{insn};
 
@@ -145,7 +147,8 @@ void TranslatorVisitor::ISBE_nx2(u64 insn) {
     }
     const IR::U32 address{ir.IAdd(X(isbe.address_reg), ir.Imm32(static_cast<u32>(isbe.offset)))};
     if (isbe.write == 0) {
-        X(isbe.reg, ir.IsbeRead(address));
+        // (hookshot) .O: the program reads back its own output region (a task's payload, a mesh's attributes)
+        X(isbe.reg, isbe.output != 0 ? ir.IsbeReadOutput(address) : ir.IsbeRead(address));
         return;
     }
     const IR::U32 value{X(isbe.reg)};

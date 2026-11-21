@@ -9,11 +9,20 @@
 namespace mkwvk {
 
 /// Queues fn for a worker (urgent: ahead of the others, for work a draw waits on)
-void jobs_push(std::function<void()> fn, bool urgent = false);
+/// flag: what the job sets when it is done. A jobs_wait on it while the job is still queued runs the job there and then
+/// on_failure: publishes the resource's failed/completed state if fn throws; must not throw.
+/// A completion flag alone does not imply success: its resource must describe the failure too.
+void jobs_push(std::function<void()> fn, bool urgent = false, const std::atomic<bool>* flag = nullptr,
+               std::function<void()> on_failure = {});
 /// Queues fn for the one thread that runs such jobs one at a time, in order
-void jobs_push_serial(std::function<void()> fn);
-/// Waits until flag is set by a job (which calls jobs_notify after setting it)
-void jobs_wait(const std::atomic<bool>& flag);
+void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure = {});
+/// Waits until flag is set by a job (which calls jobs_notify after setting it). Its job still queued (pushed with flag) is
+/// taken out and run on this thread first, so it runs once and never waits behind the queue: true when it ran here
+bool jobs_wait(const std::atomic<bool>& flag);
+/// Waits at most ms for flag, without running a queued job on this thread; whether it was set
+bool jobs_wait_for(const std::atomic<bool>& flag, double ms);
+/// (hookshot) Moves flag's job, still queued, to the queue's front, for the next free worker; whether it was queued
+bool jobs_hurry(const std::atomic<bool>& flag);
 void jobs_notify();
 int jobs_pending();
 

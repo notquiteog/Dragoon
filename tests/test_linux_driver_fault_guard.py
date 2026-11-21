@@ -14,6 +14,10 @@ import subprocess
 import sys
 import tempfile
 
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
+# (Linux only)
+RUN_ALL_SKIP = {"windows": "POSIX signals: the Linux guard"}
+
 ROOT = Path(__file__).resolve().parents[1]
 START = "return (VkResult)-77;   // (a fault in the driver, told apart from what it returns)\n    }\n}\n#else\n"
 END = "\n#endif\nVkPipeline build_graphics"
@@ -25,6 +29,9 @@ HEAD = r"""
 #include <mutex>
 #include <setjmp.h>
 #include <signal.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 using VkResult = int;
 using VkPipeline = uintptr_t;
 using VkPipelineCache = uintptr_t;
@@ -39,12 +46,17 @@ static int calls;
 static constexpr VkResult DRIVER_FAULT = -77;
 static int logged;
 void logf(const char *, ...) { ++logged; }
+static int faults_noted;
+void note_driver_fault() { ++faults_noted; }   /* (vk_draw.cpp: the preparation's watchdog counts them) */
 static void fault_now() { *(volatile int *)0x40 = 1; }
+namespace test_driver { enum class Kind { kNone, kHang, kFault, kSlow }; }   /* (gpu/vk/test_driver.h: RX_VK_TEST_DRIVER) */
+static bool inject;
+test_driver::Kind test_driver_now() { return inject ? (inject = false, test_driver::Kind::kFault) : test_driver::Kind::kNone; }
 VkResult vkCreateComputePipelines(uintptr_t device, VkPipelineCache cache, unsigned count,
                                   const VkComputePipelineCreateInfo *ci, const void *allocator, VkPipeline *out) {
     if (device != dev.device || cache != 0 || count != 1 || !ci || allocator || !out) return -1;
     ++calls;
-    if (mode == 1) fault_now();
+    if (mode == 1) { *out = 0xdead; fault_now(); }   /* (a handle written, then the fault: not a pipeline) */
     *out = 0xcafe;
     return VK_SUCCESS;
 }
@@ -52,7 +64,7 @@ VkResult vkCreateGraphicsPipelines(uintptr_t device, VkPipelineCache cache, unsi
                                    const VkGraphicsPipelineCreateInfo *ci, const void *allocator, VkPipeline *out) {
     if (device != dev.device || cache != 0 || count != 1 || !ci || allocator || !out) return -1;
     ++calls;
-    if (mode == 2) fault_now();
+    if (mode == 2) { *out = 0xdead; fault_now(); }
     *out = 0xbeef;
     return VK_SUCCESS;
 }
@@ -60,6 +72,9 @@ VkResult vkCreateGraphicsPipelines(uintptr_t device, VkPipelineCache cache, unsi
 
 MAIN = r"""
 int main(int argc, char **argv) {
+#ifdef __linux__
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);   // (fault-outside ends it by SIGSEGV on purpose: without a core dump, a crash report)
+#endif
     const char *what = argc > 1 ? argv[1] : "ok";
     if (!std::strcmp(what, "fault-outside")) { fault_now(); std::printf("fail: the fault returned\n"); return 8; }
     VkComputePipelineCreateInfo ci;
@@ -77,8 +92,12 @@ int main(int argc, char **argv) {
         if (pl != VK_NULL_HANDLE) { std::printf("fail: a pipeline was published\n"); return 6; }
     } else if (!std::strcmp(what, "fault-graphics")) {
         mode = 2;
-        if (guarded_graphics(0, &gci, &gpl) != VK_ERROR_UNKNOWN) { std::printf("fail: the fault was not reported\n"); return 5; }
+        if (guarded_graphics(0, &gci, &gpl) != DRIVER_FAULT) { std::printf("fail: the fault was not reported\n"); return 5; }
         if (gpl != VK_NULL_HANDLE) { std::printf("fail: a pipeline was published\n"); return 6; }
+    } else if (!std::strcmp(what, "injected")) {   // (RX_VK_TEST_DRIVER=fault@<n>: raised inside the guard, the driver not asked)
+        inject = true;
+        if (guarded_graphics(0, &gci, &gpl) != DRIVER_FAULT) { std::printf("fail: the injected fault was not reported\n"); return 5; }
+        if (gpl != VK_NULL_HANDLE || calls != 0) { std::printf("fail: the injected fault reached the driver\n"); return 6; }
     } else {
         std::printf("fail: unknown case %s\n", what);
         return 9;
@@ -120,10 +139,10 @@ def main():
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if build.returncode:
             raise SystemExit("the guard did not compile:\n" + build.stdout)
-        for case in ("ok", "fault", "fault-graphics", "fault-outside"):
+        for case in ("ok", "fault", "fault-graphics", "injected", "fault-outside"):
             run = subprocess.run([str(binary), case], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             killed = run.returncode == -signal.SIGSEGV
-            guarded_case = case in ("fault", "fault-graphics")
+            guarded_case = case in ("fault", "fault-graphics", "injected")
             if case == "fault-outside" or (args.expect_fault and guarded_case):
                 if not killed:
                     failures.append(case + ": the fault did not end the process: " + run.stdout.strip())
