@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.3.0-rc.28](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.27...v2.3.0-rc.28) (2026-11-15)
+
+
+### Bug Fixes
+
+* **host:** a game's sizes and counts stay inside its memory, and file handles live until their last call ([#95](https://github.com/notquiteog/Hookshot/issues/95)) ([06d7b87](https://github.com/notquiteog/Hookshot/commit/06d7b876bec64bcc43d38841d0a2ce82258d9ff8))
+* **shaders:** malformed shader input is refused, not out-of-bounds access or undefined behaviour ([#94](https://github.com/notquiteog/Hookshot/issues/94)) ([171c855](https://github.com/notquiteog/Hookshot/commit/171c855c625517eb42272969c0514251da04026d))
+
+## [2.3.0-rc.27](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.26...v2.3.0-rc.27) (2026-11-15)
+
+
+### Features
+
+* **builder:** "Your games", a list of the built games with Play, in every Builder window ([#72](https://github.com/notquiteog/Hookshot/issues/72)) ([c3060fb](https://github.com/notquiteog/Hookshot/commit/c3060fbe3e2f7d42d73e30e314549253572d1413))
+* **ro:** a game's NRO modules are lifted with it, and nn::ro loads them from the lift ([#89](https://github.com/notquiteog/Hookshot/issues/89)) ([112a391](https://github.com/notquiteog/Hookshot/commit/112a391dbe35d76dec6e23064c73de559074bafc))
+* **setup:** a full Windows setup, every part in one release file, so a new install downloads nothing ([#83](https://github.com/notquiteog/Hookshot/issues/83)) ([b252100](https://github.com/notquiteog/Hookshot/commit/b2521001218cad59a4112180ef2eef9adb3269ac))
+
+
+### Bug Fixes
+
+* **dlss:** the DLSS tick keeps the release's renderer, and a build without it keeps NVIDIA's runtimes ([#82](https://github.com/notquiteog/Hookshot/issues/82)) ([afa7854](https://github.com/notquiteog/Hookshot/commit/afa785496573581fed0f8fe0c8c47f7eee002370))
+* dump names, packed files, setup lists and chat text from outside are checked before use ([#86](https://github.com/notquiteog/Hookshot/issues/86)) ([4df1ad1](https://github.com/notquiteog/Hookshot/commit/4df1ad1b4330580a941b9bdcae103774fffd3c6f))
+* **fs:** answer GetSaveDataSize, the user save data's size and journal ([#91](https://github.com/notquiteog/Hookshot/issues/91)) ([55c3bfd](https://github.com/notquiteog/Hookshot/commit/55c3bfdee191d08afa08923bb982a52bfb8745a8))
+* GameShare's guest displays and the audio output's notification, answered ([#93](https://github.com/notquiteog/Hookshot/issues/93)) ([0f231f2](https://github.com/notquiteog/Hookshot/commit/0f231f2fedc2c48f21f5b353ded7f351d00125fa))
+
+## [2.3.0-rc.26](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.25...v2.3.0-rc.26) (2026-11-15)
+
+
+### Bug Fixes
+
+* **hid:** every GetTouchScreenState&lt;N&gt; and GetTouchScreenStates&lt;N&gt;, N 1 to 16, answered ([#88](https://github.com/notquiteog/Hookshot/issues/88)) ([2edac4e](https://github.com/notquiteog/Hookshot/commit/2edac4e2d9d884678356a9eb2d9788b28852f33b))
+* **svc:** GetInfo 16 answers the process's system resource size, so virtual address memory is on where the game has it ([#81](https://github.com/notquiteog/Hookshot/issues/81)) ([196efe5](https://github.com/notquiteog/Hookshot/commit/196efe562abb886aac82e8b04df8f58c85de35a5))
+
 ## [2.3.0-rc.25](https://github.com/notquiteog/Hookshot/compare/v2.3.0-rc.24...v2.3.0-rc.25) (2026-11-15)
 
 
