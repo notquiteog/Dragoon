@@ -32,7 +32,8 @@ ALIGN = 0x100000
 
 
 def c_ident(sym):
-    return "imp_" + "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in sym)
+    # (ASCII only: str.isalnum() is true of any letter or digit in Unicode, which a C name may not hold)
+    return "imp_" + "".join(ch if ch.isascii() and (ch.isalnum() or ch == "_") else "_" for ch in sym)
 
 
 class NxImage:
@@ -100,7 +101,8 @@ class NxImage:
                 if r["type"] == "RELATIVE":
                     v = m.base + r["addend"]
                 elif r["type"] in ("ABS64", "GLOB_DAT", "JUMP_SLOT"):
-                    v = self.resolve(r["sym"], bind.get(r["sym"]) == "weak") + (r["addend"] if r["type"] == "ABS64" else 0)
+                    # S + A for all three (AArch64 ELF ABI; rtld writes the same: symbol address + r_addend)
+                    v = self.resolve(r["sym"], bind.get(r["sym"]) == "weak") + r["addend"]
                 else:
                     raise SystemExit(f"{m.name}: relocation type {r['type']} at {r['offset']:#x} not supported")
                 struct.pack_into("<Q", self.mem, at, v & 0xFFFFFFFFFFFFFFFF)

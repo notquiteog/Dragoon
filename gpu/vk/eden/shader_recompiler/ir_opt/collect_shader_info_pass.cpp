@@ -18,6 +18,11 @@ void AddConstantBufferDescriptor(Info& info, u32 index, u32 count) {
     if (count != 1) {
         throw NotImplementedException("Constant buffer descriptor indexing");
     }
+    // (hookshot) an index the constant folding made immediate (LDC's IS mode) can be past the 18 buffers: 1U << index is
+    // undefined at 32 and more, and the sizes below are an array of MAX_CBUFS
+    if (index >= Info::MAX_CBUFS) {
+        throw NotImplementedException("Out of bounds constant buffer binding {}", index);
+    }
     if ((info.constant_buffer_mask & (1U << index)) != 0) {
         return;
     }
@@ -268,6 +273,18 @@ void VisitUsages(Info& info, IR::Inst& inst) {
     case IR::Opcode::ConvertF64S8:
     case IR::Opcode::ConvertF64U8:
         info.uses_int8 = true;
+        break;
+    default:
+        break;
+    }
+    switch (inst.GetOpcode()) {   // (hookshot) narrow global stores: a narrow storage view for the direct write
+    case IR::Opcode::WriteGlobalU8:
+    case IR::Opcode::WriteGlobalS8:
+        info.used_storage_buffer_types |= IR::Type::U8;
+        break;
+    case IR::Opcode::WriteGlobalU16:
+    case IR::Opcode::WriteGlobalS16:
+        info.used_storage_buffer_types |= IR::Type::U16;
         break;
     default:
         break;
@@ -528,6 +545,9 @@ void VisitUsages(Info& info, IR::Inst& inst) {
         if (index.IsImmediate()) {
             AddConstantBufferDescriptor(info, index.U32(), 1);
             u32 element_size = GetElementSize(info.used_constant_buffer_types, inst.GetOpcode());
+            if (index.U32() >= Info::MAX_CBUFS) {   // (AddConstantBufferDescriptor refused it already: kept here, by the write)
+                throw NotImplementedException("Out of bounds constant buffer binding {}", index.U32());
+            }
             u32& size{info.constant_buffer_used_sizes[index.U32()]};
             if (offset.IsImmediate()) {
                 size = Common::AlignUp((std::max)(size, offset.U32() + element_size), 16u);
@@ -986,6 +1006,7 @@ thread_local u32 g_nvn2_compute_layout_end{0};
 thread_local bool g_nvn2_miss_log_this{true};
 /// (RX_VK_ALL_GLOBAL_PROGS=<key prefix>[,...], a test: the program's memory accesses all left global, none bound)
 thread_local bool g_all_global_this{false};
+thread_local bool g_gm_port_this{false};   // (hookshot: EDEN_NX2_GM_PORT_PROGS names the program being translated)
 
 void CollectShaderInfoPass(Environment& env, IR::Program& program) {
     Info& info{program.info};

@@ -16,6 +16,9 @@
 
 #include "vk_internal.h"
 #include "vk_state.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace mkwvk {
 // (hookshot) the seed's compute programs (vk_shader.cpp seed_program) have no bound program to read their layout from. Translated
@@ -41,6 +44,10 @@ std::atomic<uint64_t> samp_gen{1};  // (bumped when a sampler registration's con
 // (and a version a slot: caches of what a slot resolves to check theirs, not every registration's)
 constexpr int kSlotVersions = 1 << 20;
 std::unique_ptr<std::atomic<uint32_t>[]> slot_versions{new std::atomic<uint32_t>[kSlotVersions]()};
+// (hookshot, RX_VK_SAMPLER_CACHE: the same for sampler ids, so what a sampler id resolves to can be cached and checked
+// without taking reg_mu, and descriptor reuse can tell that a sampler was registered anew)
+constexpr int kSampVersions = 1 << 12;
+std::unique_ptr<std::atomic<uint32_t>[]> samp_versions{new std::atomic<uint32_t>[kSampVersions]()};
 
 // NVN2 compute's c0: the workgroup counts at 0, then the uniform buffer table, the storage buffer table, texture
 // handles and image handles, as many slots of each as the control section says (+0xb1, +0xb2, +0xb3, +0xb6)
@@ -77,7 +84,7 @@ CsLayout cs_layout(const NvnState& s) {
         host->gpu_read(s.prog.sd[i].control + 0x56, &st, 2);
         if (magic != 0x98761234 || st != 5) continue;
         l = cs_layout_of(c);
-        static const bool log_cs = getenv("RX_VK_LOG_CS") != nullptr;   // (hookshot) the control bytes 0xb0..0xbf
+        static const bool log_cs = env_on("RX_VK_LOG_CS");   // (hookshot) the control bytes 0xb0..0xbf
         if (log_cs) {
             char hex[700];
             int k = 0;
@@ -121,9 +128,10 @@ const void* descriptor_ok(const void* p, size_t n) {
     if (!p) return nullptr;
     const uintptr_t q = (uintptr_t)p, base = (uintptr_t)host->guest_base();
     if (q >= base && q + n <= base + host->guest_size()) return p;
-    uint64_t avail = 0;
-    if (const uint8_t* h = host->gpu_ptr((uint64_t)q, &avail); h && avail >= n) return h;
-    // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c)
+    // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c. A registration's
+    // pointer is a host pointer, never a GPU address: asked as one (host->gpu_ptr), a heap address between 16 MB and 512 GB,
+    // as Windows gives them, named guest memory, and the registration was copied from there, all zero: the game's sampler
+    // 258 filtered nearest and texture slot 0x102 had no image, issue 1117's blocky halos)
     MEMORY_BASIC_INFORMATION mi{};
     if (VirtualQuery(p, &mi, sizeof mi) == sizeof mi && mi.State == MEM_COMMIT &&
         (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) && !(mi.Protect & PAGE_GUARD) &&
@@ -197,9 +205,16 @@ void register_sampler_copy(int id, const nvn_samp_par& par) {
     samp_regs[id].p = *p;
     samp_regs[id].ok = true;
     if (!same) samp_gen.fetch_add(1, std::memory_order_acq_rel);
+    samp_versions[id].fetch_add(1, std::memory_order_acq_rel);   // (hookshot: caches of what an id resolves to check this)
+}
+uint32_t sampler_slot_version(int id) {
+    return id >= 0 && id < kSampVersions ? samp_versions[id].load(std::memory_order_acquire) : 0;
 }
 uint64_t sampler_registrations_generation() {
     return samp_gen.load(std::memory_order_acquire);
+}
+void samplers_changed() {
+    samp_gen.fetch_add(1, std::memory_order_acq_rel);
 }
 void texture_released(uint64_t serial) {
     std::lock_guard lk(reg_mu);
@@ -237,8 +252,11 @@ void driver_bank(const NvnState& s, int bank, int stage, uint8_t d[0xA00]) {
 // gave 0: skinned and instanced models lost their bones and collapsed into spikes.
 struct PointerEntry { uint64_t addr, size; };
 constexpr uint32_t kPointerTable = 0x880, kPointerEntries = 3;
+// (hookshot) a vertex stage's table: up to 8 pools (Bananza's terrain reset reaches its records in 4)
+constexpr uint32_t kVertexPointerEntries = 8;
+uint32_t pointer_entries(int stage) { return stage == 0 ? kVertexPointerEntries : kPointerEntries; }
 const PointerEntry* pointer_table(const NvnState& s, int stage) {
-    thread_local PointerEntry e[kPointerEntries];
+    thread_local PointerEntry e[kVertexPointerEntries];
     thread_local uint64_t for_gen = ~0ull;
     thread_local const NvnState* for_state = nullptr;
     thread_local int for_stage = -1;
@@ -252,6 +270,30 @@ const PointerEntry* pointer_table(const NvnState& s, int stage) {
             if (b.addr && v >= b.addr && v < b.addr + b.size) return true;
         return false;
     };
+    if (stage == 0) {   // (hookshot) a vertex stage: every pool its storage buffers' pointers reach, up to 8, each whole
+        // Bananza's terrain reset (a point draw, one point a record) stores {0, 1, 0, 0, 0} through a list of 1,525 pointers
+        // in 4 pools: the first 32 of them reached one pool, and the records in the others stayed 0. The whole list is read
+        // (4,096 pointers at most), as far as it goes, and the pools it reaches are bound
+        const uint64_t most = std::min<uint64_t>(dev.props.limits.maxStorageBufferRange, 0xFFFFFF00ull) & ~0xFFull;
+        uint32_t regions = 0;
+        std::vector<uint64_t> w;
+        for (const nvn_p_bind_buf& b : s.ssbo[stage]) {
+            if (!b.addr || !b.size || regions >= kVertexPointerEntries) continue;
+            const uint32_t words = (uint32_t)std::min<uint64_t>(b.size / 8, 4096);
+            w.assign(words, 0);
+            if (!words || !memory_read_as_submitted(b.addr, w.data(), (uint64_t)words * 8)) continue;
+            for (uint32_t i = 0; i < words && regions < kVertexPointerEntries; i++) {
+                const uint64_t v = w[i];
+                if ((v & 3) || v < (1ull << 32) || v >= (1ull << 40) || !host->gpu_guest(v) || bound(v)) continue;
+                const uint64_t lo = gpu_pool_start(v), hi = gpu_pool_end(v);
+                if (!hi || hi <= lo) continue;
+                bool have = false;
+                for (uint32_t k = 0; k < regions; k++) have |= e[k].addr == lo;
+                if (!have) e[regions++] = {lo, std::min<uint64_t>(hi - lo, most)};
+            }
+        }
+        return e;
+    }
     for (const nvn_p_bind_buf& b : s.ssbo[stage]) {
         if (!b.addr || !b.size || b.size > 0x100) continue;
         uint64_t w[32]{};
@@ -343,9 +385,9 @@ void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32
     static constexpr uint32_t kSsboTable[kNvnStages] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
     if (const uint32_t base = kSsboTable[stage])
         for (uint32_t i = 0; i < 16 && base + 16 * i < n; i++) entry(base + 16 * i, s.ssbo[stage][i]);
-    if ((stage == 6 || stage == 7) && n > kPointerTable) {
+    if ((stage == 0 || stage == 6 || stage == 7) && n > kPointerTable) {   // (hookshot: vertex too, AddGlobalTables)
         const PointerEntry* e = pointer_table(s, stage);
-        for (uint32_t i = 0; i < kPointerEntries; i++) {
+        for (uint32_t i = 0; i < pointer_entries(stage); i++) {
             const uint32_t off = kPointerTable + 16 * i;
             put(off, (uint32_t)e[i].addr), put(off + 4, (uint32_t)(e[i].addr >> 32)), put(off + 8, (uint32_t)e[i].size);
         }
@@ -414,7 +456,7 @@ uint32_t driver_bank_word(const NvnState& s, int bank, int stage, uint32_t offse
         }
     };
     if (base && offset >= base && offset < base + 16 * 16) return table(s.ssbo[stage], base);
-    if ((stage == 6 || stage == 7) && offset >= kPointerTable && offset < kPointerTable + 16 * kPointerEntries) {
+    if ((stage == 0 || stage == 6 || stage == 7) && offset >= kPointerTable && offset < kPointerTable + 16 * pointer_entries(stage)) {
         const PointerEntry& e = pointer_table(s, stage)[(offset - kPointerTable) / 16];
         const uint32_t in = (offset - kPointerTable) % 16;
         return in == 0 ? lo(e.addr) : in == 4 ? hi(e.addr) : in == 8 ? (uint32_t)e.size : 0;

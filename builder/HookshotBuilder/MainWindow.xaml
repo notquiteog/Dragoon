@@ -101,13 +101,24 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <StackPanel>
             <TextBlock x:Name="FilesTitle" Style="{StaticResource Heading}" Text="Build your game"/>
             <TextBlock x:Name="FilesSub" Style="{StaticResource Sub}" Text="Pick your game files and where the game goes. Dragoon does the rest, once."/>
           </StackPanel>
 
-          <StackPanel Grid.Row="1">
+          <!-- "Your games" (Games.cs): each game built beside the game folder below, its name and folder, Open folder and Play.
+               Hidden while there is none -->
+          <StackPanel Grid.Row="1" x:Name="GamesBox" Visibility="Collapsed" Margin="0,0,0,4">
+            <TextBlock x:Name="GamesLabel" Style="{StaticResource Label}" Text="YOUR GAMES"/>
+            <Border Style="{StaticResource Card}">
+              <StackPanel x:Name="GameList"/>
+            </Border>
+          </StackPanel>
+
+          <StackPanel Grid.Row="2">
             <TextBlock x:Name="FoundLabel" Style="{StaticResource Label}" Text="FOUND ON THIS PC"/>
             <Border Style="{StaticResource Card}">
               <ScrollViewer MaxHeight="128" VerticalScrollBarVisibility="Auto">
@@ -116,14 +127,14 @@
             </Border>
           </StackPanel>
 
-          <WrapPanel Grid.Row="2" Margin="0,10,0,0" VerticalAlignment="Center">
+          <WrapPanel Grid.Row="3" Margin="0,10,0,0" VerticalAlignment="Center">
             <TextBlock x:Name="NotListed" Style="{StaticResource Note}" Text="Not listed?" Margin="0,0,8,0"/>
             <Button x:Name="BrowseButton" Style="{StaticResource LinkButton}" Content="Browse…" Click="BrowseNup"/>
             <TextBlock x:Name="DropNote" Style="{StaticResource Faint}" FontSize="13" Text=" · or drop the file on this window · " VerticalAlignment="Center"/>
             <Button x:Name="OtherWays" Style="{StaticResource LinkButton}" Foreground="{StaticResource InkSoft}" Content="romfs and exefs folders" Click="BrowseFolders"/>
           </WrapPanel>
 
-          <Grid Grid.Row="3">
+          <Grid Grid.Row="4">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
             <StackPanel>
               <TextBlock x:Name="InstallLabel" Style="{StaticResource Label}" Text="INSTALL THE GAME TO"/>
@@ -148,8 +159,9 @@
             </StackPanel>
           </Grid>
 
-          <Grid Grid.Row="4" Margin="0,12,0,0">
-            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/></Grid.ColumnDefinitions>
+          <Grid Grid.Row="5" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/></Grid.ColumnDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Grid VerticalAlignment="Center">
               <Grid.ColumnDefinitions><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
               <Border Width="16" Height="16" CornerRadius="8" Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
@@ -171,7 +183,59 @@
                 </ComboBox.FocusVisualStyle>
               </ComboBox>
             </StackPanel>
+            <StackPanel Grid.Column="4">
+              <TextBlock x:Name="MemoryLabel" Style="{StaticResource Label}" Text="BUILD MEMORY (GB)"/>
+              <ComboBox x:Name="MemoryBox" Style="{StaticResource Choice}" IsEditable="False"
+                        AutomationProperties.Name="Build memory" AutomationProperties.LabeledBy="{Binding ElementName=MemoryLabel}"
+                        ToolTip="Automatic leaves free memory to your other programs. A number lets the compilers take that many GB together, even if your other programs need it: close them, or the PC may slow down.">
+                <ComboBox.FocusVisualStyle>
+                  <Style TargetType="Control">
+                    <Setter Property="Template">
+                      <Setter.Value><ControlTemplate><Border BorderBrush="{StaticResource Brand}" BorderThickness="2" CornerRadius="10" Margin="-2"/></ControlTemplate></Setter.Value>
+                    </Setter>
+                  </Style>
+                </ComboBox.FocusVisualStyle>
+              </ComboBox>
+            </StackPanel>
+            <!-- (the update track, Updater.cs: Release, Release candidate or Nightly; the builder updates from it, saved once chosen) -->
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,12,0,0" VerticalAlignment="Center">
+              <TextBlock x:Name="TrackLabel" Style="{StaticResource Label}" Text="UPDATE TRACK" VerticalAlignment="Center" Margin="0,0,12,0"/>
+              <ComboBox x:Name="TrackBox" Width="180" Style="{StaticResource Choice}" IsEditable="False"
+                        AutomationProperties.Name="Update track" AutomationProperties.LabeledBy="{Binding ElementName=TrackLabel}"
+                        ToolTip="Release: the tested versions. Release candidate: the next version, to try before it is released. Nightly: the newest development build, updated with every change."/>
+            </StackPanel>
+            <StackPanel Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="3">
+              <!-- (make_game.py's last step, the game's prepare-shaders run: unticked, the game prepares them at its first start) -->
+              <CheckBox x:Name="PrepareTick" Style="{StaticResource Tick}" Content="Prepare shaders now"
+                        IsChecked="True" Margin="0,12,0,0"
+                        ToolTip="Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, the game prepares them at its first start, behind a black window."/>
+              <!-- (make_game.py's compile-shaders option: what that preparation builds, and every one the game runs later. ShaderStep.cs) -->
+              <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBlock x:Name="CompileLabel" Style="{StaticResource Label}" Text="COMPILE SHADERS" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <ComboBox x:Name="CompileBox" Width="170" Style="{StaticResource Choice}" IsEditable="False" SelectedIndex="0"
+                          AutomationProperties.Name="Compile shaders" AutomationProperties.LabeledBy="{Binding ElementName=CompileLabel}"
+                          ToolTip="All (the default): every shader, the pipelines the game is known to use and the predicted ones. Most: without the predicted pipelines, 20-30% shorter (19% on an RTX 5060 Ti, 30% on an RTX 3090); on one route it cost nothing in play, but more may be compiled the first time you visit a place.">
+                  <ComboBoxItem Content="All"/>
+                  <ComboBoxItem Content="Most"/>
+                </ComboBox>
+              </StackPanel>
+            </StackPanel>
           </Grid>
+
+          <!-- NVIDIA DLSS: off unless ticked. Ticking it shows NVIDIA's license; the build downloads NVIDIA's SDK under it
+               (make_game.py, scripts/ngx_sdk.py). Nothing of NVIDIA's comes with the builder -->
+          <StackPanel Grid.Row="6" Margin="0,14,0,0">
+            <CheckBox x:Name="DlssTick" Style="{StaticResource Tick}" IsChecked="False" Click="DlssChanged"
+                      Content="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)"/>
+            <TextBlock Style="{StaticResource Note}" FontSize="12" Margin="26,4,0,0" TextWrapping="Wrap"
+                       Text="For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them."/>
+            <!-- AMD FSR 4: off unless ticked. Ticking it shows AMD's license; the build downloads AMD's runtime under it
+                 (make_game.py, scripts/ffx_sdk.py). Nothing of AMD's comes with the builder -->
+            <CheckBox x:Name="FsrTick" Style="{StaticResource Tick}" IsChecked="False" Margin="0,10,0,0" Click="FsrChanged"
+                      Content="AMD FSR 4 (downloads AMD's runtime under AMD's license)"/>
+            <TextBlock Style="{StaticResource Note}" FontSize="12" Margin="26,4,0,0" TextWrapping="Wrap"
+                       Text="For AMD Radeon graphics cards. It is chosen in the game's Insert menu, as the Upscaler."/>
+          </StackPanel>
 
           </Grid>
           </ScrollViewer>
@@ -218,7 +282,7 @@
 
           <Grid Grid.Row="2">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <ToggleButton x:Name="ShowLog" Style="{StaticResource Link}" VerticalAlignment="Center" Content="Show details"
+            <ToggleButton x:Name="ShowLog" Style="{StaticResource Link}" HorizontalAlignment="Left" VerticalAlignment="Center" Content="Show details"
                           Checked="LogToggled" Unchecked="LogToggled"/>
             <Button x:Name="CancelButton" Grid.Column="1" Style="{StaticResource Quiet}" Content="Cancel" Click="CancelBuild"/>
           </Grid>
@@ -278,6 +342,11 @@
           </StackPanel>
           <Button x:Name="LaunchFolder" Style="{StaticResource LinkButton}" Foreground="{StaticResource InkFaint}" HorizontalAlignment="Center"
                   Margin="0,22,0,0" Content="Open the game folder" Click="LaunchFolderClick"/>
+          <!-- (Save my pipeline list: the zip for the "Submit your pipelines" issue, LaunchShareClick) -->
+          <Button x:Name="LaunchShare" Style="{StaticResource LinkButton}" Foreground="{StaticResource InkFaint}" HorizontalAlignment="Center"
+                  Margin="0,6,0,0" Content="Save my pipeline list (helps remove stutter)" Click="LaunchShareClick"/>
+          <TextBlock x:Name="LaunchShareStatus" FontSize="12" Foreground="{StaticResource InkSoft}" TextWrapping="Wrap" MaxWidth="560"
+                     TextAlignment="Center" HorizontalAlignment="Center" Margin="0,4,0,0" Visibility="Collapsed"/>
         </StackPanel>
 
         <!-- ===== when something goes wrong ===== -->

@@ -1,9 +1,10 @@
 #!/bin/sh
-# The Dragoon AppImage: the builder window (builder/linux/hookshot_builder.py) with everything it builds the game with -
+# The Hookshot AppImage: the builder window (builder/linux/hookshot_builder.py) with everything it builds the game with -
 # Python and the tools, clang and lld, a glibc 2.35 sysroot, FFmpeg, SDL2 and the Vulkan back end, built already.
 #   Dragoon.AppImage                  the builder window (Play is in the window, once a game is built)
 #   Dragoon.AppImage --play           start the game the builder saved, without opening the window
 #   Dragoon.AppImage --play <folder>  start the game in that folder
+#   Dragoon.AppImage --play <folder> --game <key>   that game's own folder (<folder>-<key>, the default game's <folder>)
 #   Dragoon.AppImage <folder>         the same
 #   Dragoon.AppImage --cli <args>     nx2/make_game.py itself, e.g. --cli --nup game.nup --out ~/Games/Dragoon
 #   Dragoon.AppImage --launch <dir>  the game folder's launcher: Play, and Update when a newer release is out

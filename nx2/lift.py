@@ -1,5 +1,5 @@
 """The lift driver: image (we are rtld) -> function discovery -> C, on the vendored a64-kit plus the Switch 2
-additions (nso2: DT_RELR, insn: ARMv8.1-8.5 forms, lift_fixes: jump tables).
+additions (nso2: DT_RELR, insn: ARMv8.1-8.5 forms, lift_fixes: jump tables, suyu_rt_fixes: FPX1's binary32 FMA).
 
 Usage:  python -I nx2/lift.py [--exefs <dir>] [--work <dir>] [--write] [--max-func N] [--layout eden|a64] [--aslr 0]
   --layout eden (default): Eglantine's addresses, rtld included, from 0x80000000 + --aslr (image.py; an emulator
@@ -12,9 +12,14 @@ Usage:  python -I nx2/lift.py [--exefs <dir>] [--work <dir>] [--write] [--max-fu
   --standalone: the standalone build's lift (<work>/sa/image, <work>/sa/gen): the SDK's OS-facing functions hooked
            to the native runtime in host/ or to generated stubs, plus hos_image.c (nx2/standalone.py). It shares the
            chunk boundaries of <work>/image, so its unhooked chunks are the emulator build's, byte for byte.
+
+  Which game this is a lift of, and so which patches apply, comes from the game profile (nx2/game_profile.py),
+  chosen by main's build id (HOOKSHOT_GAME=<key> overrides it). This driver names no game itself; a build no profile
+  knows is lifted with no patches at all.
 """
 import argparse
 import collections
+import glob
 import json
 import os
 import struct
@@ -28,10 +33,13 @@ import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn
 import lift_fixes
+import suyu_rt_fixes
 import chunks
 import standalone
+import game_profile
 import adr_entries  # noqa: E402
 import nso
+import nro
 import poll
 import nx_image
 import image as eden_image
@@ -41,6 +49,7 @@ import a64_rtgen
 
 insn.install()
 lift_fixes.install()
+suyu_rt_fixes.install()
 
 
 def module_of(img, pc):
@@ -110,6 +119,8 @@ def coverage(L, img, out_dir):
     return total
 
 
+
+
 def main():
     kit.wait_for_quiet('the lift')
     p = argparse.ArgumentParser()
@@ -123,17 +134,28 @@ def main():
     p.add_argument("--rechunk", action="store_true", help="chunk boundaries from the sizes again (nx2/chunks.py)")
     p.add_argument("--standalone", action="store_true", help="the standalone build's lift (nx2/standalone.py)")
     p.add_argument("--entries", help="extra entry addresses, one hex address a line (e.g. the misses ArmRecomp logged)")
+    p.add_argument("--no-nro", action="store_true", help="leave the romfs's NRO modules out (nx2/nro.py)")
     p.add_argument("--no-adr-entries", action="store_true",
                    help="no extra entries at the code addresses ADR / ADRP+ADD take (nx2/adr_entries.py)")
     a = p.parse_args()
     a.exefs = a.exefs or kit.need_exefs()
     t0 = time.time()
+    last = [t0]
+
+    def took(what):   # (each step's seconds, and the time since the start: where a lift's minutes go)
+        now = time.time()
+        print("lift: %s in %.1fs (%.0fs)" % (what, now - last[0], now - t0), flush=True)
+        last[0] = now
     hle = ()
+    nros = [] if a.no_nro else nro.find(a.exefs)   # (the dump's NROs: nx2/nro.py)
+    if nros:
+        print("nro: %d module%s from the romfs, lifted with the game: %s" % (
+            len(nros), "" if len(nros) == 1 else "s", ", ".join(os.path.basename(p) for p in nros)))
     if a.standalone:
-        hle, stubbed = standalone.hle_set(nso.load_exefs(a.exefs))
+        hle, stubbed = standalone.hle_set(nso.load_exefs(a.exefs) + nro.load(nros))
         print("standalone: %d HLE functions in host/, %d OS-facing imports stubbed" % (len(hle), len(stubbed)))
         hle = hle | stubbed
-    img = eden_image.EdenImage(a.exefs, a.aslr, hle=hle) if a.layout == "eden" else nx_image.NxImage(a.exefs)
+    img = eden_image.EdenImage(a.exefs, a.aslr, hle=hle, nros=nros) if a.layout == "eden" else nx_image.NxImage(a.exefs)
     out_dir = os.path.join(a.work, "sa") if a.standalone else a.work
     img_dir = os.path.join(out_dir, "image")
     meta = img.write(img_dir)
@@ -155,16 +177,16 @@ def main():
         print("ADR / ADRP+ADD code addresses outside the %d unwind-covered functions: %d, %d of them new entries" % (
             len(spans), len(refs), len(new)))
     L = a64_lift.Lifter(img)
-    if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
-        import oot_wide
-        oot_wide.install(L, img)
-        import oot_camera   # (after oot_wide: it appends to the same site)
-        oot_camera.install(L, img)
-        import oot_occlusion   # (no occlusion queries when HOOKSHOT_OCCLUSION_OFF=1: Fritchii's Occlusion Off)
-        oot_occlusion.install(L, img)
+    main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
+    profile = game_profile.active(build_id=main_build)
+    print("game profile: %s (%s) for main %s" % (profile.key, profile.game, main_build or "?"))
+    if a.standalone:   # (hookshot) the game's lift patches (Ocarina's: widescreen, the lens, the jitter, occlusion off)
+        game_profile.install_patches(L, img, profile, main_build)
     L.discover(max_insns=a.max_func)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
+    last[0] = time.time()
     total = coverage(L, img, img_dir)
+    took("coverage")
     jt = L.stats
     print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
         len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
@@ -179,19 +201,31 @@ def main():
             poll.install()
         gen = os.path.join(out_dir, "gen")
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
-                             counters=[] if a.no_polls else [poll.stats])
-        import oot_patches
-        main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
-        oot_patches.apply(gen, protect_hearts=a.standalone and main_build == oot_patches.LIFE_BUILD_ID)
-        a64_rtgen.write(gen)
-        if a.standalone:
-            start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
-            print("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
-                start, exit_, standalone.gen_stubs(gen, meta)))
-            nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
-            standalone.write_nvn_exports(gen, nvn)
-            print("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
+                             counters=[] if a.no_polls else [poll.stats], took=took)
+        def tables():   # (the runtime tables and the standalone files: they read the image, not the lifted C)
+            lines = []
+            a64_rtgen.write(gen)
+            if a.standalone:
+                start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
+                # the profile's C view beside the lifted C, for nx2/build.py to compile the runtime with
+                lines.append("standalone: %s" % game_profile.write_header(os.path.join(out_dir, "game"), profile))
+                lines.append("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
+                    start, exit_, standalone.gen_stubs(gen, meta)))
+                nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
+                standalone.write_nvn_exports(gen, nvn)
+                lines.append("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
+            return lines
+        # (made in a process of their own while the C is edited: 4-8 s that waited for the edits. Where there is no fork, after them)
+        side = chunks.start_side(tables)
+        patches = profile.code_patch_module   # (Ocarina's nx2/oot_patches.py; none for a game without them)
+        supported = bool(patches) and a.standalone and \
+            main_build == getattr(game_profile.load_module(patches), "LIFE_BUILD_ID", None)
+        chunks.edit_c(gen, L.stats, supported, whole=not a.max_func, took=took, patches=patches)
+        print("\n".join(chunks.end_side(side, tables)), flush=True)
+        took("runtime tables and standalone files (beside the edits)" if side else "runtime tables and standalone files")
         L.report()
+        if L.stats["entry_gotos"]:   # (nx2/lift_fixes.py, 4)
+            print("functions with code below their entry, started at it by a goto: %d" % L.stats["entry_gotos"])
         print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
     print("done (%.0fs)" % (time.time() - t0))

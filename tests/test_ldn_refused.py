@@ -24,6 +24,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+RUN_ALL_ARGS = ["--cc", "gcc"]
 sys.path.insert(0, str(ROOT / "nx2"))
 import standalone   # noqa: E402
 
