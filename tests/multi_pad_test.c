@@ -59,6 +59,9 @@ static void *at(uint64_t address) { CHECK(address <= 512 - 8); return memory + a
 #define GP(a) at(a)
 #define G32(a) (*(uint32_t *)at(a))
 #define G64(a) (*(uint64_t *)at(a))
+/* (host/hos.h's GR: a range the game names, wholly in its memory; here the 512 bytes, or the check fails) */
+static void *guest_need(uint64_t a, uint64_t n) { CHECK(a <= 512 && n <= 512 - a); return memory + a; }
+#define GR(a, n) guest_need((a), (n))
 #define ARG(n) (c->x[n])
 #define RET(value) (c->x[0] = (uint64_t)(value))
 

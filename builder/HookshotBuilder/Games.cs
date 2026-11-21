@@ -20,6 +20,7 @@ static class Games
         ("oot", "The Legend of Zelda: Ocarina of Time", "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"),
         ("dkb", "Donkey Kong Bananza", "e25c90c1c136638885659fd55bf8a03b3403489d"),
         ("mkw", "Mario Kart World", "9e244438c3d8ef1c703a6a85ef99c4f000000000"),
+        ("kar", "Kirby Air Riders", "9ede03836568bcd34434dfc29bc61e0451dbbe3e"),   // (Dragoon: the fork's game)
     };
 
     /// A built game: the profile whose folder it is (Key: Play's --game), the game the folder holds (Name), its folder, the base
